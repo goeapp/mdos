@@ -1,0 +1,1457 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0f172a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>M2 · Monitor 2</title>
+<!--
+  index_mdos_v1.0.0.html — M2 · Monitor 2 v1.0.0 (16-oct-2026)
+  Repo: goeapp/mdos → https://goeapp.github.io/mdos/ (subir como index.html, junto con
+        manifest.webmanifest, sw.js, icon-192.png, icon-512.png, icon-maskable-512.png, apple-touch-icon.png)
+
+  La notebook "tira" un PDF, una imagen o un MD y la tablet lo muestra al instante.
+  · Un solo index para los dos roles, elegido una vez por dispositivo:
+      Emisor (notebook): login por código (Supabase Auth, mismo flujo que GOE Admin), solo admin global.
+                         Arrastrar y soltar · Ctrl+V de una captura · botón Elegir archivo.
+                         Histórico: tocar = mostrar en la tablet · borrar · quitar de pantalla.
+      Monitor (tablet):  sesión anónima de Supabase emparejada una vez con un código de 6 dígitos.
+                         Cambia sola al llegar algo (Realtime). Histórico propio para volver a mirar (solo local).
+  · Visores: PDF con pdf.js 3.11 legacy (scroll y pellizco) · imagen (pellizco, arrastre, doble toque = ajustar)
+             · MD con marked.js (A− / A+). Cada pantalla scrollea y hace zoom por su cuenta.
+  · Header mínimo + pantalla completa. Instalable (manifest + service worker). Pantalla siempre encendida
+    en el monitor (Wake Lock, si el navegador lo soporta).
+
+  Requiere en Supabase: mdos_esquema_v1_0_0.sql + "Allow anonymous sign-ins" ON
+                        + https://goeapp.github.io/mdos/ en Authentication → URL Configuration → Redirect URLs.
+
+  Changelog
+  v1.0.0 — primera versión.
+-->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+<style>
+/* ── TOKENS (stack: MdT / GOE Admin) ───────────────────── */
+:root {
+  --bg: #f1f5f9; --surface: #ffffff; --border: #e2e8f0;
+  --accent: #d97706; --accent-border: #92400e; --accent2: #0f172a;
+  --tag-bg: #fef3c7; --tag-fg: #92400e;
+  --text: #1e293b; --muted: #64748b; --success: #16a34a; --danger: #dc2626;
+  --ok-bg: #dcfce7; --ok-fg: #166534; --err-bg: #fee2e2; --err-fg: #991b1b;
+  --sel-bg: #fff7ed;
+  --visor-bg: #334155;
+  --radius: 12px; --radius-sm: 8px;
+  --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,.18);
+  --header-h: 40px;
+  --md-fs: 17px;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 14px; line-height: 1.5; overflow: hidden; -webkit-tap-highlight-color: transparent; }
+button, input, select { font-family: inherit; font-size: inherit; color: inherit; }
+button { cursor: pointer; }
+[hidden] { display: none !important; }
+
+/* ── PANTALLAS DE ENTRADA ──────────────────────────────── */
+.pantalla { display: none; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 20px; gap: 18px; overflow-y: auto; }
+.pantalla.activa { display: flex; }
+.caja { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 36px 34px; max-width: 400px; width: 100%; text-align: center; box-shadow: var(--shadow-md); }
+.caja-logo { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 4px; }
+.caja-logo img { width: 44px; height: 44px; }
+.caja-tit { font-family: 'Bebas Neue', sans-serif; font-size: 2.1rem; color: var(--accent); letter-spacing: 3px; line-height: 1; }
+.caja-sub { font-size: .78rem; color: var(--muted); margin-bottom: 26px; }
+.paso { text-align: left; }
+.paso label { display: block; font-size: .72rem; font-weight: 600; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: .05em; }
+.inp { width: 100%; font-size: 16px; padding: 10px 12px; border: 1.5px solid var(--border); border-radius: var(--radius-sm); background: #f8fafc; outline: none; }
+.inp:focus { border-color: var(--accent); background: #fff; }
+.inp.codigo { letter-spacing: 8px; font-size: 26px; text-align: center; font-family: 'Courier New', monospace; font-weight: 700; }
+.btn-gr { width: 100%; margin-top: 14px; padding: 11px 16px; border: 1px solid var(--accent-border); border-radius: var(--radius-sm); background: var(--accent); color: #fff; font-size: .9rem; font-weight: 600; }
+.btn-gr:disabled { opacity: .55; cursor: wait; }
+.btn-gr.sec { background: transparent; color: var(--muted); border: 1px solid var(--border); font-weight: 500; margin-top: 8px; }
+.msg { font-size: .78rem; margin-top: 10px; padding: 7px 10px; border-radius: var(--radius-sm); line-height: 1.45; }
+.msg:empty { display: none; }
+.msg.error { background: var(--err-bg); color: var(--err-fg); }
+.msg.info  { background: var(--tag-bg); color: var(--tag-fg); }
+.msg.ok    { background: var(--ok-bg); color: var(--ok-fg); }
+.enviado { font-size: .8rem; color: var(--muted); line-height: 1.5; }
+.enviado b { color: var(--text); }
+.roles { display: flex; flex-direction: column; gap: 12px; }
+.rol { display: flex; align-items: center; gap: 14px; text-align: left; padding: 16px 18px; border: 1.5px solid var(--border); border-radius: var(--radius); background: #f8fafc; transition: border-color .15s, background .15s; }
+.rol:hover, .rol.sugerido { border-color: var(--accent); background: var(--sel-bg); }
+.rol-ico { font-size: 1.9rem; }
+.rol-tit { font-weight: 600; font-size: 1rem; }
+.rol-sub { font-size: .76rem; color: var(--muted); }
+.pie-ver { font-size: .7rem; color: var(--muted); }
+
+/* ── APP / HEADER MÍNIMO ───────────────────────────────── */
+#app { display: none; flex-direction: column; height: 100%; }
+#app.activa { display: flex; }
+#hdr { height: var(--header-h); background: var(--accent2); display: flex; align-items: center; gap: 8px; padding: 0 8px 0 10px; flex-shrink: 0; color: #fff; position: relative; z-index: 30; }
+#hdr img { width: 24px; height: 24px; }
+.hdr-tit { font-family: 'Bebas Neue', sans-serif; font-size: 1.25rem; color: var(--accent); letter-spacing: 2px; line-height: 1; }
+.hdr-ver { font-size: .64rem; color: rgba(255,255,255,.35); }
+.hdr-nombre { font-size: .8rem; color: rgba(255,255,255,.85); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; padding-left: 6px; }
+.hdr-nombre .chip { margin-left: 6px; }
+.hb { background: transparent; border: 1px solid rgba(255,255,255,.18); color: rgba(255,255,255,.85); border-radius: 7px; height: 28px; min-width: 32px; padding: 0 8px; font-size: .8rem; display: inline-flex; align-items: center; justify-content: center; gap: 5px; white-space: nowrap; }
+.hb:hover { background: rgba(255,255,255,.08); color: #fff; }
+.hb.on { border-color: var(--accent); color: #fbbf24; background: rgba(217,119,6,.15); }
+.hb.inst { border-color: rgba(217,119,6,.7); color: #fbbf24; }
+.punto { width: 9px; height: 9px; border-radius: 50%; background: #64748b; flex-shrink: 0; }
+.punto.ok { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+.punto.err { background: #ef4444; box-shadow: 0 0 6px #ef4444; }
+.punto.esp { background: #f59e0b; animation: latido 1s ease infinite; }
+@keyframes latido { 50% { opacity: .35; } }
+.hdr-estado { display: inline-flex; align-items: center; gap: 6px; font-size: .74rem; color: rgba(255,255,255,.6); white-space: nowrap; }
+/* Pantalla completa: el header se esconde; la manija lo muestra unos segundos */
+body.fs #hdr { position: absolute; top: 0; left: 0; right: 0; transform: translateY(-100%); transition: transform .2s; }
+body.fs.hdr-ver-fs #hdr { transform: none; box-shadow: var(--shadow-md); }
+#manija { display: none; position: fixed; top: 6px; right: 8px; z-index: 31; width: 34px; height: 34px; border-radius: 50%; border: none; background: rgba(15,23,42,.45); color: rgba(255,255,255,.85); font-size: 1rem; }
+body.fs #manija { display: block; }
+body.fs.hdr-ver-fs #manija { display: none; }
+
+/* ── CUERPO ────────────────────────────────────────────── */
+#cuerpo { flex: 1; display: flex; min-height: 0; position: relative; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; font-size: .68rem; font-weight: 600; background: #e2e8f0; color: #475569; white-space: nowrap; }
+.chip.ok { background: var(--ok-bg); color: var(--ok-fg); }
+.chip.warn { background: var(--tag-bg); color: var(--tag-fg); }
+.chip.acc { background: var(--accent); color: #fff; }
+
+/* Emisor: columna izquierda */
+#col { width: 320px; flex-shrink: 0; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+#soltar { margin: 12px; border: 2px dashed #cbd5e1; border-radius: var(--radius); padding: 14px 12px; text-align: center; cursor: pointer; transition: all .15s; }
+#soltar:hover { border-color: var(--accent); background: #fef9f0; }
+.soltar-tit { font-weight: 600; font-size: .86rem; }
+.soltar-sub { font-size: .72rem; color: var(--muted); margin-top: 2px; }
+.soltar-sub kbd { font-family: inherit; font-size: .68rem; background: #f1f5f9; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
+.col-barra { display: flex; gap: 6px; padding: 0 12px 10px; }
+.col-barra .inp { font-size: 13px; padding: 6px 10px; }
+.btn { padding: 6px 12px; border-radius: var(--radius-sm); border: 1px solid var(--accent-border); background: var(--accent); color: #fff; font-weight: 600; font-size: .78rem; white-space: nowrap; }
+.btn.sec { background: var(--surface); color: var(--text); border-color: #475569; font-weight: 500; }
+.btn.peligro { background: var(--danger); border-color: #991b1b; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.lista { flex: 1; overflow-y: auto; border-top: 1px solid var(--border); }
+.it { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--border); border-left: 3px solid transparent; cursor: pointer; }
+.it:hover { background: #f8fafc; }
+.it.activo { background: var(--sel-bg); border-left-color: var(--accent); }
+.it.subiendo { opacity: .6; cursor: wait; }
+.it-ico { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: .66rem; font-weight: 700; flex-shrink: 0; letter-spacing: .03em; }
+.it-ico.pdf { background: #fee2e2; color: #991b1b; }
+.it-ico.imagen { background: #dbeafe; color: #1e40af; }
+.it-ico.md { background: #e0e7ff; color: #3730a3; }
+.it-txt { flex: 1; min-width: 0; }
+.it-nom { font-weight: 600; font-size: .82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.it-sub { font-size: .7rem; color: var(--muted); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.it-acc { display: flex; gap: 4px; opacity: 0; transition: opacity .12s; }
+.it:hover .it-acc, .it.activo .it-acc { opacity: 1; }
+.ib { background: transparent; border: 1px solid var(--border); border-radius: 6px; width: 28px; height: 26px; font-size: .78rem; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; }
+.ib:hover { border-color: #475569; color: var(--text); }
+.ib.peligro:hover { border-color: var(--danger); color: var(--danger); }
+.lista-vacia { padding: 22px 14px; text-align: center; color: var(--muted); font-size: .8rem; }
+.spin { width: 16px; height: 16px; border: 2.5px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: gira .8s linear infinite; display: inline-block; }
+@keyframes gira { to { transform: rotate(360deg); } }
+
+/* Emisor: área principal */
+#principal { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+#barra-act { height: 38px; flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 0 12px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: .8rem; }
+#barra-act .lbl { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+#barra-act .nom { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+
+/* ── VISOR (compartido) ────────────────────────────────── */
+#visor { flex: 1; min-height: 0; min-width: 0; position: relative; background: var(--visor-bg); overflow: hidden; }
+.vz { position: absolute; inset: 0; }
+.vz-img { touch-action: none; overflow: hidden; cursor: grab; user-select: none; }
+.vz-img.arrastrando { cursor: grabbing; }
+.vz-img img { position: absolute; left: 0; top: 0; transform-origin: 0 0; max-width: none; user-select: none; -webkit-user-drag: none; pointer-events: none; image-rendering: auto; }
+.vz-pdf { overflow: auto; touch-action: pan-x pan-y; -webkit-overflow-scrolling: touch; }
+.vz-pdf-hojas { padding: 12px; display: flex; flex-direction: column; align-items: center; gap: 12px; transform-origin: 0 0; width: max-content; min-width: 100%; }
+.vz-hoja { background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.35); position: relative; flex-shrink: 0; }
+.vz-hoja canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.vz-hoja .n { position: absolute; top: 50%; left: 0; right: 0; text-align: center; color: #cbd5e1; font-size: 2rem; font-weight: 600; transform: translateY(-50%); }
+.vz-md { overflow: auto; background: var(--bg); -webkit-overflow-scrolling: touch; }
+.vz-md .md-page { max-width: 980px; margin: 16px auto 60px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 34px 44px; }
+.vz-vacio { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: rgba(255,255,255,.75); text-align: center; padding: 20px; background: #1e293b; }
+.vz-vacio img { width: 84px; height: 84px; opacity: .9; }
+.vz-reloj { font-family: 'Bebas Neue', sans-serif; font-size: 5.5rem; letter-spacing: 4px; line-height: 1; color: #fff; }
+.vz-fecha { font-size: 1rem; color: rgba(255,255,255,.6); text-transform: capitalize; }
+.vz-espera { font-size: .82rem; color: rgba(255,255,255,.45); margin-top: 8px; }
+.vz-cargando { display: flex; align-items: center; justify-content: center; gap: 10px; color: rgba(255,255,255,.8); }
+.vz-error { display: flex; align-items: center; justify-content: center; color: #fecaca; padding: 20px; text-align: center; }
+/* Controles flotantes del visor */
+.vz-ctrl { position: absolute; right: 12px; bottom: 12px; display: flex; gap: 6px; z-index: 5; }
+.vz-ctrl button { width: 42px; height: 42px; border-radius: 10px; border: none; background: rgba(15,23,42,.72); color: #fff; font-size: 1.05rem; font-weight: 600; box-shadow: 0 2px 6px rgba(0,0,0,.25); }
+.vz-ctrl button:active { background: var(--accent); }
+.vz-pag { position: absolute; left: 12px; bottom: 12px; z-index: 5; background: rgba(15,23,42,.72); color: #fff; font-size: .8rem; padding: 6px 10px; border-radius: 8px; pointer-events: none; }
+.vz-zoom { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); z-index: 6; background: rgba(15,23,42,.8); color: #fff; font-size: .82rem; font-weight: 600; padding: 4px 12px; border-radius: 999px; pointer-events: none; opacity: 0; transition: opacity .2s; }
+.vz-zoom.ver { opacity: 1; }
+
+/* ── MARKDOWN (de MDtoDOCX v1.5) ───────────────────────── */
+.md-body { font-size: var(--md-fs); line-height: 1.65; color: var(--text); word-wrap: break-word; }
+.md-body > *:first-child { margin-top: 0; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4, .md-body h5, .md-body h6 { font-weight: 600; line-height: 1.3; margin: 1.5em 0 .6em; color: var(--accent2); }
+.md-body h1 { font-size: 1.9em; padding-bottom: .3em; border-bottom: 2px solid var(--accent); }
+.md-body h2 { font-size: 1.45em; padding-bottom: .25em; border-bottom: 1px solid var(--border); }
+.md-body h3 { font-size: 1.2em; } .md-body h4 { font-size: 1.05em; } .md-body h5 { font-size: .95em; } .md-body h6 { font-size: .9em; color: var(--muted); }
+.md-body p { margin: 0 0 1em; }
+.md-body a { color: #1d4ed8; text-decoration: underline; text-underline-offset: 2px; }
+.md-body strong { font-weight: 600; }
+.md-body ul, .md-body ol { margin: 0 0 1em; padding-left: 1.6em; }
+.md-body li { margin: .25em 0; }
+.md-body li > ul, .md-body li > ol { margin: .2em 0; }
+.md-body input[type=checkbox] { margin-right: 6px; accent-color: var(--accent); }
+.md-body li.tarea { list-style: none; margin-left: -1.3em; }
+.md-body code { font-family: Consolas, 'Courier New', monospace; font-size: .87em; background: #f1f5f9; color: #b45309; padding: .12em .4em; border-radius: 4px; }
+.md-body pre { background: #f8fafc; border: 1px solid var(--border); border-left: 3px solid #cbd5e1; border-radius: var(--radius-sm); padding: 12px 16px; margin: 0 0 1em; overflow-x: auto; }
+.md-body pre code { background: none; color: var(--text); padding: 0; font-size: .85em; line-height: 1.5; }
+.md-body blockquote { margin: 0 0 1em; padding: 8px 16px; border-left: 4px solid var(--accent); background: #fef9f0; color: #475569; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.md-body blockquote > :last-child { margin-bottom: 0; }
+.md-body hr { border: none; border-top: 1px solid var(--border); margin: 1.6em 0; }
+.md-body .tbl-wrap { overflow-x: auto; margin: 0 0 1em; }
+.md-body table { border-collapse: collapse; width: 100%; font-size: .9em; }
+.md-body th, .md-body td { border: 1px solid var(--border); padding: 7px 11px; text-align: left; vertical-align: top; }
+.md-body th { background: #f1f5f9; font-weight: 600; }
+.md-body tr:nth-child(even) td { background: #fafbfc; }
+.md-body img { max-width: 100%; }
+
+/* ── MONITOR: histórico (cajón) ────────────────────────── */
+#cajon { position: absolute; top: 0; right: 0; bottom: 0; width: 340px; max-width: 86%; background: var(--surface); box-shadow: -6px 0 20px rgba(0,0,0,.25); z-index: 20; display: flex; flex-direction: column; transform: translateX(105%); transition: transform .2s; }
+#cajon.abierto { transform: none; }
+.cajon-tit { padding: 12px 14px; font-family: 'Bebas Neue', sans-serif; font-size: 1.2rem; letter-spacing: 1px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+.cajon-tit button { margin-left: auto; }
+#cajon .it { padding: 12px 14px; }
+#cajon .it-nom { font-size: .9rem; }
+
+/* ── MODAL ─────────────────────────────────────────────── */
+#modal { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+#modal.abierto { display: flex; }
+.modal { background: var(--surface); border-radius: var(--radius); box-shadow: 0 20px 50px rgba(0,0,0,.3); width: 520px; max-width: 100%; max-height: calc(100vh - 32px); display: flex; flex-direction: column; }
+.modal-head { padding: 16px 20px 6px; font-family: 'Bebas Neue', sans-serif; font-size: 1.35rem; letter-spacing: .6px; }
+.modal-body { padding: 6px 20px 14px; overflow-y: auto; font-size: .86rem; }
+.modal-foot { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
+.cod-grande { font-family: 'Courier New', monospace; font-size: 3rem; font-weight: 700; letter-spacing: 12px; text-align: center; color: var(--accent2); background: var(--tag-bg); border: 2px solid var(--accent); border-radius: 12px; padding: 12px 0 12px 12px; margin: 10px 0 6px; }
+.nota { font-size: .76rem; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+table.tabla { width: 100%; border-collapse: collapse; font-size: .82rem; margin-top: 6px; }
+.tabla th { text-align: left; font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; padding: 5px 6px; border-bottom: 1px solid var(--border); }
+.tabla td { padding: 7px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.tabla td.acc { text-align: right; width: 1%; white-space: nowrap; }
+
+/* ── SOLTAR SOBRE TODA LA VENTANA ──────────────────────── */
+#sobre { display: none; position: fixed; inset: 10px; z-index: 40; border: 3px dashed var(--accent); border-radius: 16px; background: rgba(254,249,240,.92); align-items: center; justify-content: center; flex-direction: column; gap: 6px; pointer-events: none; }
+#sobre.ver { display: flex; }
+#sobre b { font-size: 1.4rem; color: var(--accent); }
+#sobre span { color: var(--muted); font-size: .9rem; }
+
+/* ── TOAST ─────────────────────────────────────────────── */
+#toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--accent2); color: #fff; padding: 10px 18px; border-radius: var(--radius-sm); font-size: .84rem; opacity: 0; pointer-events: none; transition: all .25s; z-index: 60; box-shadow: var(--shadow-md); max-width: calc(100% - 32px); text-align: center; }
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#toast.error { background: var(--danger); }
+
+/* ── ANGOSTO (emisor en celular) ───────────────────────── */
+@media (max-width: 760px) {
+  body.emisor #cuerpo { flex-direction: column; }
+  body.emisor #col { width: 100%; max-height: 42%; border-right: none; border-bottom: 1px solid var(--border); }
+  .vz-md .md-page { padding: 20px 18px; margin: 8px; }
+  .hdr-ver { display: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- 1. ELEGIR ROL (una vez por dispositivo) -->
+<section class="pantalla" id="pt-rol">
+  <div class="caja">
+    <div class="caja-logo"><img src="icon-192.png" alt=""><span class="caja-tit">M2</span></div>
+    <div class="caja-sub">Monitor 2 · ¿Qué es este dispositivo?</div>
+    <div class="roles">
+      <button class="rol" type="button" id="rol-emisor"><span class="rol-ico">💻</span><span><span class="rol-tit">Emisor</span><br><span class="rol-sub">La notebook: tira archivos a la tablet</span></span></button>
+      <button class="rol" type="button" id="rol-monitor"><span class="rol-ico">🖥️</span><span><span class="rol-tit">Monitor</span><br><span class="rol-sub">La tablet: muestra lo que manda la notebook</span></span></button>
+    </div>
+  </div>
+  <div class="pie-ver" id="pie-ver"></div>
+</section>
+
+<!-- 2. LOGIN EMISOR (mismo flujo que GOE Admin v1.5) -->
+<section class="pantalla" id="pt-login">
+  <div class="caja">
+    <div class="caja-logo"><img src="icon-192.png" alt=""><span class="caja-tit">M2</span></div>
+    <div class="caja-sub">Emisor · entrar con tu mail</div>
+    <div class="paso" id="login-paso-email">
+      <label for="login-email">Email</label>
+      <input class="inp" id="login-email" type="email" autocomplete="email">
+      <button class="btn-gr" id="login-enviar" type="button">Enviar código</button>
+      <div class="msg" id="login-msg-email"></div>
+    </div>
+    <div class="paso" id="login-paso-codigo" hidden>
+      <div class="enviado">Te mandamos un código a <b id="login-email-enviado"></b>. Revisá también Spam.</div>
+      <label for="login-codigo">Código</label>
+      <input class="inp codigo" id="login-codigo" inputmode="numeric" autocomplete="one-time-code" maxlength="10">
+      <button class="btn-gr" id="login-validar" type="button">Ingresar</button>
+      <button class="btn-gr sec" id="login-volver" type="button">Cambiar email</button>
+      <div class="msg" id="login-msg-codigo"></div>
+    </div>
+    <button class="btn-gr sec" type="button" data-cambiar-rol>Este dispositivo es otro (cambiar)</button>
+  </div>
+</section>
+
+<!-- 3. SIN PERMISO -->
+<section class="pantalla" id="pt-denegado">
+  <div class="caja">
+    <div style="font-size:2.6rem">🔒</div>
+    <div style="font-weight:600;margin:8px 0">M2 es solo para el administrador global</div>
+    <div class="enviado" id="denegado-email"></div>
+    <button class="btn-gr sec" type="button" id="denegado-salir">Cerrar sesión</button>
+  </div>
+</section>
+
+<!-- 4. EMPAREJAR MONITOR -->
+<section class="pantalla" id="pt-emparejar">
+  <div class="caja">
+    <div class="caja-logo"><img src="icon-192.png" alt=""><span class="caja-tit">M2</span></div>
+    <div class="caja-sub">Monitor · emparejar esta tablet (una sola vez)</div>
+    <div class="paso">
+      <div class="enviado">En la notebook: <b>M2 → 🖥 Monitores → Emparejar tablet</b>. Escribí acá el código que aparece.</div>
+      <label for="emp-nombre">Nombre de esta pantalla</label>
+      <input class="inp" id="emp-nombre" maxlength="40" value="Tablet">
+      <label for="emp-codigo">Código</label>
+      <input class="inp codigo" id="emp-codigo" inputmode="numeric" maxlength="6" autocomplete="off">
+      <button class="btn-gr" id="emp-btn" type="button">Emparejar</button>
+      <div class="msg" id="emp-msg"></div>
+    </div>
+    <button class="btn-gr sec" type="button" data-cambiar-rol>Este dispositivo es otro (cambiar)</button>
+  </div>
+</section>
+
+<!-- 5. APP -->
+<div id="app">
+  <header id="hdr">
+    <img src="icon-192.png" alt="">
+    <span class="hdr-tit">M2</span>
+    <span class="hdr-ver" id="hdr-ver"></span>
+    <span class="hdr-nombre" id="hdr-nombre"></span>
+    <span class="hdr-estado" id="hdr-estado" title="Conexión"><span class="punto" id="hdr-punto"></span><span id="hdr-estado-txt"></span></span>
+    <button class="hb inst" id="hb-instalar" type="button" hidden>⬇ Instalar</button>
+    <button class="hb" id="hb-monitores" type="button" title="Tablets emparejadas" hidden>🖥 Monitores</button>
+    <button class="hb" id="hb-historico" type="button" title="Histórico" hidden>☰</button>
+    <button class="hb" id="hb-full" type="button" title="Pantalla completa">⛶</button>
+    <button class="hb" id="hb-menu" type="button" title="Sesión">⋮</button>
+  </header>
+  <button id="manija" type="button" title="Mostrar barra">⋯</button>
+  <div id="cuerpo">
+    <aside id="col" hidden>
+      <div id="soltar" title="También podés soltar el archivo en cualquier parte de la ventana">
+        <div class="soltar-tit">⬆ Tirá un archivo acá</div>
+        <div class="soltar-sub">Arrastrá · <kbd>Ctrl</kbd>+<kbd>V</kbd> una captura · o tocá para elegir<br>PDF, imagen o MD · hasta 50 MB</div>
+      </div>
+      <div class="col-barra"><input class="inp" id="buscar" placeholder="Buscar en el histórico"></div>
+      <div class="lista" id="lista"></div>
+    </aside>
+    <main id="principal">
+      <div id="barra-act" hidden>
+        <span class="lbl">En pantalla</span>
+        <span class="nom" id="act-nombre">—</span>
+        <span class="hdr-estado" id="act-monitores" style="color:var(--muted)"></span>
+        <button class="btn sec" id="act-quitar" type="button">Quitar de pantalla</button>
+      </div>
+      <div id="visor"></div>
+    </main>
+    <aside id="cajon">
+      <div class="cajon-tit">Histórico <button class="btn sec" id="cajon-cerrar" type="button">Cerrar</button></div>
+      <div class="lista" id="cajon-lista"></div>
+    </aside>
+  </div>
+</div>
+
+<input type="file" id="archivo" accept=".pdf,.md,.markdown,image/*,application/pdf" multiple hidden>
+<div id="sobre"><b>Soltá para mostrar en la tablet</b><span>PDF, imagen o MD</span></div>
+<div id="modal"><div class="modal" role="dialog" aria-modal="true"><div class="modal-head" id="modal-tit"></div><div class="modal-body" id="modal-body"></div><div class="modal-foot" id="modal-foot"></div></div></div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+/* ════════════════════════════════════════════════════════
+   CONFIGURACIÓN
+════════════════════════════════════════════════════════ */
+const VERSION_UI     = 'v1.0.0';
+const SUPABASE_URL   = 'https://uhuftsxrzwhmvzygcuvp.supabase.co';
+const SUPABASE_KEY   = 'sb_publishable_TCibRAnzgaDIbn_MIirw6w_FltKG8X3';
+const REDIRECT_MAIL  = 'https://goeapp.github.io/mdos/';   // la plantilla del mail lo usa para poner "M2"
+const EMAIL_SUGERIDO = 'goecdg@gmail.com';
+const BUCKET         = 'mdos';
+const MAX_MB         = 50;
+const PDFJS_URL      = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.min.js';
+const PDFJS_WORKER   = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.worker.min.js';
+const LS = { rol: 'mdos-rol', mdFs: 'mdos-md-fs', nombre: 'mdos-monitor-nombre' };
+const PING_MS = 60000, POLL_MS = 20000, MONITORES_MS = 30000, EN_LINEA_MS = 150000;
+
+// Sesión propia de M2: todas las PWA viven en goeapp.github.io (mismo localStorage)
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, storageKey: 'mdos-sb-auth' }
+});
+
+/* ════════════════════════════════════════════════════════
+   ESTADO
+════════════════════════════════════════════════════════ */
+const st = {
+  rol: null,              // 'emisor' | 'monitor'
+  email: '',
+  items: [],              // mdos_items (más nuevo primero)
+  estado: null,           // mdos_estado (item_id, actualizado_en)
+  mostrando: null,        // item que está en el visor
+  local: false,           // monitor: viendo algo del histórico (no lo actual)
+  subiendo: [],           // emisor: { tmp, nombre, tipo }
+  monitores: [],
+  canal: null, rtOk: false,
+  timers: [],
+  wake: null,
+};
+const cache = new Map();  // ruta → Blob (los últimos 6)
+let emailPendiente = '';
+
+/* ════════════════════════════════════════════════════════
+   UTILIDADES
+════════════════════════════════════════════════════════ */
+const $ = id => document.getElementById(id);
+const log = (...a) => console.log('[M2]', ...a);
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function lsSet(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* sin storage */ } }
+function toast(msg, error) {
+  const t = $('toast'); t.textContent = msg; t.className = error ? 'error show' : 'show';
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.className = error ? 'error' : '', error ? 5000 : 2600);
+}
+function fmtBytes(b) { b = Number(b) || 0; return b < 1024 ? b + ' B' : b < 1048576 ? (b / 1024).toFixed(0) + ' KB' : (b / 1048576).toFixed(1) + ' MB'; }
+function fmtFecha(iso) {
+  const d = new Date(iso), hoy = new Date();
+  const hm = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === hoy.toDateString()) return 'hoy ' + hm;
+  const ayer = new Date(hoy); ayer.setDate(hoy.getDate() - 1);
+  if (d.toDateString() === ayer.toDateString()) return 'ayer ' + hm;
+  return d.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' }) + ' ' + hm;
+}
+function hace(iso) {
+  if (!iso) return 'nunca';
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return 'hace ' + s + ' s';
+  if (s < 3600) return 'hace ' + Math.round(s / 60) + ' min';
+  if (s < 86400) return 'hace ' + Math.round(s / 3600) + ' h';
+  return 'hace ' + Math.round(s / 86400) + ' d';
+}
+function textoError(err) {
+  const m = (err && (err.message || err.msg || err.error_description || err.details)) || String(err);
+  if (/JWT|session|token/i.test(m)) return 'La sesión venció. Volvé a ingresar.';
+  if (/Failed to fetch|NetworkError|network|Load failed/i.test(m)) return 'Sin conexión con la base.';
+  if (/row-level security|permission denied|42501|sin permiso/i.test(m)) return 'Sin permiso para esa operación.';
+  if (/Payload too large|exceeded the maximum|too large/i.test(m)) return `El archivo supera ${MAX_MB} MB.`;
+  if (/mime type|invalid_mime/i.test(m)) return 'Ese tipo de archivo no está permitido en el bucket.';
+  if (/Anonymous sign-ins are disabled/i.test(m)) return 'Falta habilitar "Allow anonymous sign-ins" en Supabase (Authentication).';
+  return m;
+}
+async function q(promesa) { const { data, error } = await promesa; if (error) throw error; return data; }
+const TIPO_TXT = { pdf: 'PDF', imagen: 'IMG', md: 'MD' };
+const esTactil = () => ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+function itemPorId(id) { return st.items.find(i => i.id === id) || null; }
+
+/* ════════════════════════════════════════════════════════
+   PANTALLAS
+════════════════════════════════════════════════════════ */
+function pantalla(cual) {
+  document.querySelectorAll('.pantalla').forEach(p => p.classList.toggle('activa', p.id === 'pt-' + cual));
+  $('app').classList.toggle('activa', cual === 'app');
+}
+function msg(id, tipo, texto) { const el = $(id); el.className = 'msg ' + (tipo || ''); el.textContent = texto || ''; }
+
+/* ════════════════════════════════════════════════════════
+   MODAL
+════════════════════════════════════════════════════════ */
+function abrirModal({ titulo, html, botones, alAbrir, alCerrar }) {
+  return new Promise(resolve => {
+    $('modal-tit').innerHTML = titulo; $('modal-body').innerHTML = html;
+    const foot = $('modal-foot'); foot.innerHTML = '';
+    const cerrar = v => { $('modal').classList.remove('abierto'); document.removeEventListener('keydown', teclas); if (alCerrar) alCerrar(v); resolve(v); };
+    abrirModal.cerrar = cerrar;
+    botones.forEach(b => {
+      const el = document.createElement('button'); el.type = 'button'; el.className = 'btn ' + (b.clase || ''); el.textContent = b.texto;
+      if (b.id) el.id = b.id;
+      el.onclick = async () => { if (b.antes && !(await b.antes(el))) return; cerrar(b.valor); };
+      foot.appendChild(el);
+    });
+    const teclas = e => { if (e.key === 'Escape') cerrar(false); };
+    document.addEventListener('keydown', teclas);
+    $('modal').onclick = e => { if (e.target.id === 'modal') cerrar(false); };
+    $('modal').classList.add('abierto');
+    if (alAbrir) alAbrir();
+  });
+}
+function confirmar(titulo, html, textoOk, peligro) {
+  return abrirModal({ titulo, html, botones: [{ texto: 'Cancelar', clase: 'sec', valor: false }, { texto: textoOk || 'Confirmar', clase: peligro ? 'peligro' : '', valor: true }] });
+}
+
+/* ════════════════════════════════════════════════════════
+   ARRANQUE: rol + sesión
+════════════════════════════════════════════════════════ */
+async function arrancar() {
+  st.rol = lsGet(LS.rol);
+  const { data } = await sb.auth.getSession();
+  const ses = data.session;
+  if (st.rol === 'emisor') {
+    if (ses && !ses.user.is_anonymous) return entrarEmisor(ses);
+    return mostrarLogin();
+  }
+  if (st.rol === 'monitor') {
+    if (ses && ses.user.is_anonymous) return entrarMonitor();
+    return mostrarEmparejar();
+  }
+  mostrarRol();
+}
+function mostrarRol() {
+  pantalla('rol');
+  $('rol-monitor').classList.toggle('sugerido', esTactil());
+  $('rol-emisor').classList.toggle('sugerido', !esTactil());
+}
+async function cambiarRol() {
+  try { await sb.auth.signOut({ scope: 'local' }); } catch (e) { log('signOut', e); }
+  lsSet(LS.rol, null); st.rol = null;
+  mostrarRol();
+}
+function elegirRol(rol) {
+  st.rol = rol; lsSet(LS.rol, rol);
+  if (rol === 'emisor') mostrarLogin(); else mostrarEmparejar();
+}
+
+/* ════════════════════════════════════════════════════════
+   EMISOR — LOGIN (mismo flujo que GOE Admin v1.5)
+════════════════════════════════════════════════════════ */
+function pasoLogin(p) { $('login-paso-email').hidden = p !== 'email'; $('login-paso-codigo').hidden = p !== 'codigo'; }
+function traducirErrorAuth(err) {
+  const m = (err && (err.message || err.msg)) || String(err);
+  if (/rate limit|too many|security purposes/i.test(m)) return 'Demasiados pedidos de código seguidos. Esperá un minuto y probá de nuevo.';
+  if (/expired|invalid/i.test(m)) return 'Código incorrecto o vencido.';
+  return textoError(err);
+}
+function mostrarLogin() {
+  pantalla('login');
+  if (!$('login-email').value) $('login-email').value = EMAIL_SUGERIDO;
+  pasoLogin('email');
+}
+async function enviarCodigo() {
+  const email = $('login-email').value.trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { msg('login-msg-email', 'error', 'Ingresá un email válido.'); return; }
+  $('login-enviar').disabled = true; msg('login-msg-email', 'info', 'Enviando código…');
+  const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: true, emailRedirectTo: REDIRECT_MAIL } });
+  $('login-enviar').disabled = false;
+  if (error) { console.error('[M2 signInWithOtp]', error); msg('login-msg-email', 'error', traducirErrorAuth(error)); return; }
+  emailPendiente = email; msg('login-msg-email', '', ''); msg('login-msg-codigo', '', '');
+  $('login-email-enviado').textContent = email; $('login-codigo').value = '';
+  pasoLogin('codigo'); $('login-codigo').focus();
+}
+async function validarCodigo() {
+  const token = $('login-codigo').value.replace(/\D/g, '');
+  if (token.length < 6) { msg('login-msg-codigo', 'error', 'El código tiene al menos 6 dígitos.'); return; }
+  $('login-validar').disabled = true; msg('login-msg-codigo', 'info', 'Validando…');
+  const { data, error } = await sb.auth.verifyOtp({ email: emailPendiente, token, type: 'email' });
+  $('login-validar').disabled = false;
+  if (error) { console.error('[M2 verifyOtp]', error); msg('login-msg-codigo', 'error', traducirErrorAuth(error)); return; }
+  msg('login-msg-codigo', '', '');
+  await entrarEmisor(data.session);
+}
+async function entrarEmisor(ses) {
+  const email = (ses.user.email || '').toLowerCase();
+  const { data, error } = await sb.rpc('mdos_es_emisor');
+  if (error) {
+    console.error('[M2 mdos_es_emisor]', error);
+    mostrarLogin(); msg('login-msg-email', 'error', 'No se pudo verificar el acceso: ' + textoError(error));
+    return;
+  }
+  if (data !== true) { pantalla('denegado'); $('denegado-email').textContent = email; return; }
+  st.email = email;
+  iniciarApp('emisor');
+}
+
+/* ════════════════════════════════════════════════════════
+   MONITOR — EMPAREJAR
+════════════════════════════════════════════════════════ */
+function mostrarEmparejar(aviso) {
+  pantalla('emparejar');
+  $('emp-nombre').value = lsGet(LS.nombre) || 'Tablet';
+  $('emp-codigo').value = '';
+  msg('emp-msg', aviso ? 'info' : '', aviso || '');
+}
+async function emparejar() {
+  if ($('emp-btn').disabled) return;
+  const codigo = $('emp-codigo').value.replace(/\D/g, '');
+  const nombre = $('emp-nombre').value.trim() || 'Tablet';
+  if (codigo.length !== 6) { msg('emp-msg', 'error', 'El código tiene 6 dígitos.'); return; }
+  $('emp-btn').disabled = true; msg('emp-msg', 'info', 'Emparejando…');
+  try {
+    let { data } = await sb.auth.getSession();
+    if (!data.session || !data.session.user.is_anonymous) {
+      const r = await sb.auth.signInAnonymously();
+      if (r.error) throw r.error;
+    }
+    const ok = await q(sb.rpc('mdos_emparejar', { p_codigo: codigo, p_nombre: nombre, p_agente: navigator.userAgent }));
+    if (!ok) { msg('emp-msg', 'error', 'Código incorrecto o vencido. Pedí uno nuevo en la notebook.'); return; }
+    lsSet(LS.nombre, nombre);
+    msg('emp-msg', 'ok', '¡Emparejada!');
+    await entrarMonitor();
+  } catch (e) {
+    console.error('[M2 emparejar]', e);
+    msg('emp-msg', 'error', textoError(e));
+  } finally { $('emp-btn').disabled = false; }
+}
+async function entrarMonitor() {
+  try {
+    const ok = await q(sb.rpc('mdos_monitor_ping'));
+    if (!ok) { mostrarEmparejar('Esta tablet no está emparejada (o fue desemparejada desde la notebook).'); return; }
+  } catch (e) {
+    console.error('[M2 ping]', e);
+    // Sin red al arrancar: entra igual y reintenta solo
+    if (!/conexión/.test(textoError(e))) { mostrarEmparejar(textoError(e)); return; }
+  }
+  iniciarApp('monitor');
+}
+
+/* ════════════════════════════════════════════════════════
+   APP (común)
+════════════════════════════════════════════════════════ */
+async function iniciarApp(rol) {
+  st.rol = rol;
+  document.body.classList.toggle('emisor', rol === 'emisor');
+  document.body.classList.toggle('monitor', rol === 'monitor');
+  pantalla('app');
+  $('hdr-ver').textContent = VERSION_UI;
+  $('col').hidden = rol !== 'emisor';
+  $('barra-act').hidden = rol !== 'emisor';
+  $('hb-monitores').hidden = rol !== 'emisor';
+  $('hb-historico').hidden = rol !== 'monitor';
+  $('hdr-nombre').textContent = rol === 'emisor' ? st.email : '';
+  if (!document.fullscreenEnabled && !document.webkitFullscreenEnabled) $('hb-full').hidden = true;
+  renderVacio();
+  await cargarTodo();
+  conectarRealtime();
+  st.timers.forEach(clearInterval); st.timers = [];
+  st.timers.push(setInterval(sondeo, POLL_MS));
+  if (rol === 'monitor') {
+    st.timers.push(setInterval(ping, PING_MS));
+    pedirWakeLock();
+  } else {
+    cargarMonitores();
+    st.timers.push(setInterval(cargarMonitores, MONITORES_MS));
+  }
+}
+async function cargarTodo() {
+  try {
+    const [items, est] = await Promise.all([
+      q(sb.from('mdos_items').select('*').order('creado_en', { ascending: false }).limit(300)),
+      q(sb.from('mdos_estado').select('*').eq('id', 1)),
+    ]);
+    st.items = items; st.estado = est[0] || null;
+    renderListas();
+    aplicarEstado();
+  } catch (e) {
+    console.error('[M2 cargarTodo]', e);
+    toast('No se pudo cargar: ' + textoError(e), true);
+  }
+}
+// Respaldo del Realtime: si se perdió un aviso, el sondeo lo corrige
+async function sondeo() {
+  try {
+    const est = await q(sb.from('mdos_estado').select('*').eq('id', 1));
+    const e = est[0] || null;
+    const cambio = !st.estado || !e || e.item_id !== st.estado.item_id || e.actualizado_en !== st.estado.actualizado_en;
+    if (cambio || !st.rtOk) await cargarTodo();
+  } catch (e) { log('sondeo', textoError(e)); }
+}
+function conectarRealtime() {
+  if (st.canal) { try { sb.removeChannel(st.canal); } catch (e) { /* nada */ } st.canal = null; }
+  estadoConexion('esp');
+  st.canal = sb.channel('mdos-' + st.rol)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'mdos_estado' }, p => {
+      log('rt estado', p.eventType);
+      if (p.new && p.new.id === 1) { st.estado = p.new; aplicarEstado(); renderListas(); }
+      else sondeo();
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'mdos_items' }, p => {
+      log('rt items', p.eventType);
+      if (p.eventType === 'INSERT' && p.new && !itemPorId(p.new.id)) { st.items.unshift(p.new); renderListas(); }
+      else if (p.eventType === 'DELETE' && p.old && p.old.id) { st.items = st.items.filter(i => i.id !== p.old.id); renderListas(); if (st.mostrando && st.mostrando.id === p.old.id && st.local) volverALoActual(); }
+      else cargarTodo();
+    })
+    .subscribe(status => {
+      log('rt', status);
+      if (status === 'SUBSCRIBED') { st.rtOk = true; estadoConexion('ok'); sondeo(); }
+      else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        st.rtOk = false; estadoConexion('err');
+        clearTimeout(conectarRealtime._t); conectarRealtime._t = setTimeout(() => { if (document.visibilityState === 'visible') conectarRealtime(); }, 8000);
+      }
+    });
+}
+function estadoConexion(tipo) {
+  $('hdr-punto').className = 'punto ' + tipo;
+  $('hdr-estado').title = tipo === 'ok' ? 'Conectado (tiempo real)' : tipo === 'err' ? 'Sin conexión en tiempo real: reintentando' : 'Conectando…';
+  if (st.rol === 'monitor') $('hdr-estado-txt').textContent = tipo === 'err' ? 'sin conexión' : '';
+}
+async function ping() {
+  try {
+    const ok = await q(sb.rpc('mdos_monitor_ping'));
+    if (!ok) { salirDeApp(); mostrarEmparejar('Esta tablet fue desemparejada desde la notebook.'); }
+  } catch (e) { log('ping', textoError(e)); }
+}
+function salirDeApp() {
+  st.timers.forEach(clearInterval); st.timers = [];
+  if (st.canal) { try { sb.removeChannel(st.canal); } catch (e) { /* nada */ } st.canal = null; }
+  liberarVisor();
+  soltarWakeLock();
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !$('app').classList.contains('activa')) return;
+  sondeo();
+  if (!st.rtOk) conectarRealtime();
+  if (st.rol === 'monitor') { ping(); pedirWakeLock(); }
+});
+
+// Qué mostrar según mdos_estado
+function aplicarEstado() {
+  const id = st.estado && st.estado.item_id;
+  const it = id ? itemPorId(id) : null;
+  if (st.rol === 'emisor') {
+    $('act-nombre').textContent = it ? it.nombre : 'Nada (la tablet muestra la hora)';
+    $('act-quitar').disabled = !it;
+  }
+  if (st.rol === 'monitor' && st.local) {
+    // La notebook mandó otra cosa: la tablet vuelve a lo actual
+    if (st._ultimoActual === undefined || st._ultimoActual !== (id || null)) { st.local = false; }
+    else return;
+  }
+  st._ultimoActual = id || null;
+  if (id && !it) {                                    // llegó antes el estado que el ítem, o es más viejo que los 300 de la lista
+    if (st._faltante !== id) { st._faltante = id; traerItem(id); } else renderVacio();
+    return;
+  }
+  if ((st.mostrando && st.mostrando.id) === (it && it.id) && !st.local) { encabezado(); return; }
+  if (it) mostrarItem(it); else renderVacio();
+}
+async function traerItem(id) {
+  try {
+    const filas = await q(sb.from('mdos_items').select('*').eq('id', id));
+    if (filas[0] && !itemPorId(id)) st.items.push(filas[0]);
+    renderListas();
+  } catch (e) { log('traerItem', textoError(e)); }
+  aplicarEstado();
+}
+function encabezado() {
+  if (st.rol !== 'monitor') return;
+  const it = st.mostrando;
+  $('hdr-nombre').innerHTML = it ? esc(it.nombre) + (st.local ? ' <span class="chip warn">del histórico</span> <button class="hb" type="button" id="hb-volver">↩ Lo actual</button>' : '') : '';
+  const b = $('hb-volver'); if (b) b.onclick = volverALoActual;
+}
+function volverALoActual() { st.local = false; st.mostrando = null; aplicarEstado(); renderListas(); }
+
+/* ════════════════════════════════════════════════════════
+   LISTAS (emisor: columna · monitor: cajón)
+════════════════════════════════════════════════════════ */
+function filaItem(it, opts) {
+  const activo = st.estado && st.estado.item_id === it.id;
+  const viendo = st.rol === 'monitor' && st.mostrando && st.mostrando.id === it.id;
+  return `<div class="it ${activo || viendo ? 'activo' : ''}" data-id="${it.id}">
+    <div class="it-ico ${it.tipo}">${TIPO_TXT[it.tipo] || '?'}</div>
+    <div class="it-txt"><div class="it-nom" title="${esc(it.nombre)}">${esc(it.nombre)}</div>
+      <div class="it-sub">${fmtFecha(it.creado_en)} · ${fmtBytes(it.tamano)} ${activo ? '<span class="chip acc">EN PANTALLA</span>' : ''}</div></div>
+    ${opts.acciones ? `<div class="it-acc"><button class="ib" type="button" data-mostrar="${it.id}" title="Mostrar en la tablet">▶</button><button class="ib peligro" type="button" data-borrar="${it.id}" title="Borrar">🗑</button></div>` : ''}
+  </div>`;
+}
+function renderListas() {
+  if (st.rol === 'emisor') {
+    const txt = $('buscar').value.trim().toLowerCase();
+    const items = st.items.filter(i => !txt || i.nombre.toLowerCase().includes(txt));
+    const sub = st.subiendo.map(s => `<div class="it subiendo"><div class="it-ico ${s.tipo}">${TIPO_TXT[s.tipo]}</div><div class="it-txt"><div class="it-nom">${esc(s.nombre)}</div><div class="it-sub"><span class="spin"></span> subiendo…</div></div></div>`).join('');
+    $('lista').innerHTML = sub + (items.length ? items.map(i => filaItem(i, { acciones: true })).join('')
+      : `<div class="lista-vacia">${txt ? 'Nada con ese nombre.' : 'Todavía no tiraste nada. Arrastrá un archivo o pegá una captura.'}</div>`);
+    $('lista').querySelectorAll('.it[data-id]').forEach(el => el.onclick = e => {
+      if (e.target.closest('[data-borrar]')) return;
+      mostrarEnTablet(el.dataset.id);
+    });
+    $('lista').querySelectorAll('[data-borrar]').forEach(b => b.onclick = e => { e.stopPropagation(); borrarItem(b.dataset.borrar); });
+  } else {
+    $('cajon-lista').innerHTML = st.items.length ? st.items.map(i => filaItem(i, {})).join('') : '<div class="lista-vacia">Todavía no hay nada.</div>';
+    $('cajon-lista').querySelectorAll('.it[data-id]').forEach(el => el.onclick = () => {
+      const it = itemPorId(el.dataset.id); if (!it) return;
+      const actual = st.estado && st.estado.item_id;
+      st.local = it.id !== actual;
+      mostrarItem(it);
+      cerrarCajon();
+      renderListas();
+    });
+  }
+}
+function abrirCajon() { $('cajon').classList.add('abierto'); $('hb-historico').classList.add('on'); renderListas(); }
+function cerrarCajon() { $('cajon').classList.remove('abierto'); $('hb-historico').classList.remove('on'); }
+
+/* ════════════════════════════════════════════════════════
+   EMISOR — tirar archivos
+════════════════════════════════════════════════════════ */
+function tipoDe(file) {
+  const n = (file.name || '').toLowerCase(), t = file.type || '';
+  if (t === 'application/pdf' || n.endsWith('.pdf')) return 'pdf';
+  if (t.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(n)) return 'imagen';
+  if (n.endsWith('.md') || n.endsWith('.markdown') || t === 'text/markdown') return 'md';
+  return null;
+}
+function mimeDe(file, tipo) {
+  if (tipo === 'pdf') return 'application/pdf';
+  if (tipo === 'md') return 'text/markdown';
+  if (file.type && file.type.startsWith('image/')) return file.type;
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  return { jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml' }[ext] || 'image/png';
+}
+function extDe(tipo, mime, nombre) {
+  if (tipo === 'pdf') return 'pdf';
+  if (tipo === 'md') return 'md';
+  const m = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp', 'image/svg+xml': 'svg' }[mime];
+  return m || (nombre.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 5) || 'png';
+}
+async function tirarArchivos(files) {
+  const lista = Array.from(files || []);
+  if (!lista.length) return;
+  const validos = [];
+  for (const f of lista) {
+    const tipo = tipoDe(f);
+    if (!tipo) { toast(`"${f.name}": solo PDF, imagen o MD.`, true); continue; }
+    if (f.size > MAX_MB * 1048576) { toast(`"${f.name}" pesa ${fmtBytes(f.size)}: el máximo es ${MAX_MB} MB.`, true); continue; }
+    validos.push({ f, tipo });
+  }
+  let ultimo = null;
+  for (const { f, tipo } of validos) {
+    const r = await subir(f, tipo);
+    if (r) ultimo = r;
+  }
+  if (ultimo) await mostrarEnTablet(ultimo.id, true);
+}
+async function subir(file, tipo) {
+  const tmp = { tmp: crypto.randomUUID(), nombre: file.name, tipo };
+  st.subiendo.push(tmp); renderListas();
+  const mime = mimeDe(file, tipo);
+  const ruta = crypto.randomUUID() + '.' + extDe(tipo, mime, file.name);
+  try {
+    log('subiendo', file.name, fmtBytes(file.size));
+    await q(sb.storage.from(BUCKET).upload(ruta, file, { contentType: mime, upsert: false, cacheControl: '31536000' }));
+    const filas = await q(sb.from('mdos_items').insert({ nombre: file.name.slice(0, 200), tipo, mime, tamano: file.size, ruta }).select());
+    const it = filas[0];
+    if (!itemPorId(it.id)) st.items.unshift(it);
+    cache.set(ruta, file);
+    return it;
+  } catch (e) {
+    console.error('[M2 subir]', e);
+    toast(`No se pudo subir "${file.name}": ${textoError(e)}`, true);
+    try { await sb.storage.from(BUCKET).remove([ruta]); } catch (e2) { /* nada */ }
+    return null;
+  } finally {
+    st.subiendo = st.subiendo.filter(s => s !== tmp); renderListas();
+  }
+}
+async function mostrarEnTablet(id, recienSubido) {
+  const it = itemPorId(id); if (!it) return;
+  try {
+    const filas = await q(sb.from('mdos_estado').update({ item_id: id, actualizado_en: new Date().toISOString(), actualizado_por: st.email }).eq('id', 1).select());
+    st.estado = filas[0] || { id: 1, item_id: id };
+    aplicarEstado(); renderListas();
+    toast((recienSubido ? 'Subido · ' : '') + 'En la tablet: ' + it.nombre);
+  } catch (e) { console.error('[M2 mostrar]', e); toast('No se pudo mostrar: ' + textoError(e), true); }
+}
+async function quitarDePantalla() {
+  try {
+    const filas = await q(sb.from('mdos_estado').update({ item_id: null, actualizado_en: new Date().toISOString(), actualizado_por: st.email }).eq('id', 1).select());
+    st.estado = filas[0] || { id: 1, item_id: null };
+    aplicarEstado(); renderListas(); toast('La tablet muestra la hora');
+  } catch (e) { toast('No se pudo: ' + textoError(e), true); }
+}
+async function borrarItem(id) {
+  const it = itemPorId(id); if (!it) return;
+  const enPantalla = st.estado && st.estado.item_id === id;
+  const ok = await confirmar('Borrar del histórico', `<div>¿Borrar <b>${esc(it.nombre)}</b>?</div><div class="nota">Se borra el archivo de la nube. No se puede deshacer${enPantalla ? '. Está en pantalla: la tablet pasa a mostrar la hora' : ''}.</div>`, 'Borrar', true);
+  if (!ok) return;
+  try {
+    await q(sb.storage.from(BUCKET).remove([it.ruta]));
+    await q(sb.from('mdos_items').delete().eq('id', id));
+    st.items = st.items.filter(i => i.id !== id);
+    cache.delete(it.ruta);
+    if (enPantalla) { st.estado = Object.assign({}, st.estado, { item_id: null }); aplicarEstado(); }
+    renderListas(); toast('Borrado');
+  } catch (e) { console.error('[M2 borrar]', e); toast('No se pudo borrar: ' + textoError(e), true); }
+}
+
+// Pegar (Ctrl+V) una captura o un archivo copiado
+document.addEventListener('paste', e => {
+  if (st.rol !== 'emisor' || !$('app').classList.contains('activa')) return;
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+  const dt = e.clipboardData; if (!dt) return;
+  const files = [];
+  for (const item of Array.from(dt.items || [])) {
+    if (item.kind !== 'file') continue;
+    let f = item.getAsFile(); if (!f) continue;
+    if (!f.name || /^image\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name)) {
+      const d = new Date(), p = n => String(n).padStart(2, '0');
+      const ext = (f.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+      f = new File([f], `captura_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.${ext}`, { type: f.type || 'image/png' });
+    }
+    files.push(f);
+  }
+  if (!files.length) { toast('No hay una imagen en el portapapeles (copiá una captura y probá de nuevo).'); return; }
+  e.preventDefault();
+  tirarArchivos(files);
+});
+// Soltar en cualquier parte de la ventana
+let profArrastre = 0;
+window.addEventListener('dragenter', e => {
+  if (st.rol !== 'emisor' || !$('app').classList.contains('activa')) return;
+  if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+  e.preventDefault(); profArrastre++; $('sobre').classList.add('ver');
+});
+window.addEventListener('dragleave', () => { profArrastre = Math.max(0, profArrastre - 1); if (!profArrastre) $('sobre').classList.remove('ver'); });
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => {
+  e.preventDefault(); profArrastre = 0; $('sobre').classList.remove('ver');
+  if (st.rol === 'emisor' && $('app').classList.contains('activa') && e.dataTransfer && e.dataTransfer.files.length) tirarArchivos(e.dataTransfer.files);
+});
+
+/* ════════════════════════════════════════════════════════
+   EMISOR — MONITORES (emparejar / desemparejar)
+════════════════════════════════════════════════════════ */
+async function cargarMonitores() {
+  try {
+    st.monitores = await q(sb.from('mdos_monitores').select('*').order('emparejado_en', { ascending: false }));
+    pintarMonitores();
+  } catch (e) { log('monitores', textoError(e)); }
+}
+function enLinea(m) { return m.ultimo_visto && Date.now() - new Date(m.ultimo_visto).getTime() < EN_LINEA_MS; }
+function pintarMonitores() {
+  const el = $('act-monitores'), ms = st.monitores;
+  if (!ms.length) { el.innerHTML = '<span class="punto"></span> sin tablet emparejada'; return; }
+  const on = ms.filter(enLinea);
+  el.innerHTML = on.length ? `<span class="punto ok"></span> ${esc(on.map(m => m.nombre).join(', '))} en línea`
+    : `<span class="punto"></span> ${esc(ms[0].nombre)} · visto ${hace(ms[0].ultimo_visto)}`;
+}
+function htmlMonitores() {
+  const ms = st.monitores;
+  return ms.length ? `<table class="tabla"><thead><tr><th>Pantalla</th><th>Emparejada</th><th>Vista</th><th></th></tr></thead><tbody>${ms.map(m => `<tr>
+      <td><b>${esc(m.nombre)}</b> ${enLinea(m) ? '<span class="chip ok">en línea</span>' : ''}<div class="nota" style="margin:0" title="${esc(m.user_agent || '')}">${esc(agenteCorto(m.user_agent))}</div></td>
+      <td>${fmtFecha(m.emparejado_en)}</td><td>${hace(m.ultimo_visto)}</td>
+      <td class="acc"><button class="btn sec" type="button" data-desemp="${m.auth_uid}">Desemparejar</button></td></tr>`).join('')}</tbody></table>`
+    : '<div class="nota">No hay ninguna tablet emparejada.</div>';
+}
+function agenteCorto(ua) {
+  ua = String(ua || '');
+  const and = ua.match(/Android [\d.]+/), cr = ua.match(/Chrome\/(\d+)/), mod = ua.match(/;\s*([A-Z]{2}-[A-Z0-9]+)/);
+  return [mod && mod[1], and && and[0], cr && 'Chrome ' + cr[1]].filter(Boolean).join(' · ') || ua.slice(0, 60);
+}
+async function abrirMonitores() {
+  await cargarMonitores();
+  let timer = null;
+  const pintar = () => {
+    $('mon-lista').innerHTML = htmlMonitores();
+    $('mon-lista').querySelectorAll('[data-desemp]').forEach(b => b.onclick = async () => {
+      const m = st.monitores.find(x => x.auth_uid === b.dataset.desemp);
+      b.disabled = true;
+      try { await q(sb.from('mdos_monitores').delete().eq('auth_uid', m.auth_uid)); toast(`${m.nombre} desemparejada`); await cargarMonitores(); pintar(); }
+      catch (e) { b.disabled = false; toast('No se pudo: ' + textoError(e), true); }
+    });
+  };
+  await abrirModal({
+    titulo: '🖥 Monitores',
+    html: `<div id="mon-lista"></div><div id="mon-codigo"></div>
+      <div class="nota">Cada tablet se empareja una sola vez y queda recordada. Desemparejar le corta el acceso de inmediato.</div>`,
+    botones: [{ texto: 'Emparejar tablet', id: 'mon-nuevo', valor: null, antes: async el => { await nuevoCodigo(el); return false; } }, { texto: 'Cerrar', clase: 'sec', valor: true }],
+    alAbrir: pintar,
+    alCerrar: () => { clearInterval(timer); clearInterval(nuevoCodigo._t); if (nuevoCodigo._activo) { nuevoCodigo._activo = false; sb.rpc('mdos_anular_codigo').then(() => { }, () => { }); } },
+  });
+  async function nuevoCodigo(btn) {
+    btn.disabled = true;
+    try {
+      const antes = new Set(st.monitores.map(m => m.auth_uid + m.emparejado_en));
+      const cod = await q(sb.rpc('mdos_nuevo_codigo'));
+      nuevoCodigo._activo = true;
+      const vence = Date.now() + 10 * 60000;
+      const cuenta = () => {
+        const s = Math.max(0, Math.round((vence - Date.now()) / 1000));
+        const el = $('mon-cuenta'); if (el) el.textContent = s ? `Vence en ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : 'Venció: pedí otro.';
+        if (!s) { clearInterval(nuevoCodigo._t); nuevoCodigo._activo = false; }
+      };
+      $('mon-codigo').innerHTML = `<div class="nota" style="color:var(--text)">En la tablet: abrí M2 → <b>Monitor</b> y escribí este código:</div>
+        <div class="cod-grande" id="mon-cod">${esc(cod)}</div><div class="nota" style="text-align:center;margin-top:0" id="mon-cuenta"></div>`;
+      clearInterval(nuevoCodigo._t); nuevoCodigo._t = setInterval(cuenta, 1000); cuenta();
+      clearInterval(timer);
+      timer = setInterval(async () => {
+        await cargarMonitores();
+        const nueva = st.monitores.find(m => !antes.has(m.auth_uid + m.emparejado_en));
+        if (nueva) {
+          clearInterval(timer); clearInterval(nuevoCodigo._t); nuevoCodigo._activo = false;
+          $('mon-codigo').innerHTML = `<div class="msg ok">✓ ${esc(nueva.nombre)} emparejada.</div>`;
+          pintar();
+        }
+      }, 3000);
+      btn.textContent = 'Otro código';
+    } catch (e) { toast('No se pudo generar el código: ' + textoError(e), true); }
+    finally { btn.disabled = false; }
+  }
+}
+
+/* ════════════════════════════════════════════════════════
+   VISOR — común a los dos roles
+   Cada pantalla scrollea y hace zoom por su cuenta.
+════════════════════════════════════════════════════════ */
+let V = null;   // { tipo, item, limpiar() }
+function liberarVisor() {
+  if (V && V.limpiar) { try { V.limpiar(); } catch (e) { log('limpiar', e); } }
+  V = null;
+  clearInterval(renderVacio._t);
+  $('visor').innerHTML = '';
+}
+function renderVacio() {
+  liberarVisor(); st.mostrando = null; encabezado();
+  if (st.rol === 'monitor') {
+    $('visor').innerHTML = `<div class="vz vz-vacio"><img src="icon-192.png" alt=""><div class="vz-reloj" id="vz-reloj"></div><div class="vz-fecha" id="vz-fecha"></div>
+      <div class="vz-espera">Esperando que la notebook tire algo…</div></div>`;
+    const tic = () => {
+      const d = new Date(), r = $('vz-reloj'), f = $('vz-fecha'); if (!r) return;
+      r.textContent = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+      f.textContent = d.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
+    };
+    tic(); renderVacio._t = setInterval(tic, 10000);
+  } else {
+    $('visor').innerHTML = `<div class="vz vz-vacio"><img src="icon-192.png" alt=""><div style="font-size:1.05rem;color:#fff">Nada en pantalla</div>
+      <div class="vz-espera">Tirá un archivo (arrastrar · Ctrl+V · elegir) o tocá uno del histórico.</div></div>`;
+  }
+}
+async function bajar(it) {
+  if (cache.has(it.ruta)) return cache.get(it.ruta);
+  const blob = await q(sb.storage.from(BUCKET).download(it.ruta));
+  cache.set(it.ruta, blob);
+  while (cache.size > 6) cache.delete(cache.keys().next().value);
+  return blob;
+}
+async function mostrarItem(it) {
+  liberarVisor();
+  st.mostrando = it; encabezado();
+  const sello = {}; V = { sello, tipo: it.tipo, item: it };
+  $('visor').innerHTML = '<div class="vz vz-cargando"><span class="spin"></span> Cargando ' + esc(it.nombre) + '…</div>';
+  try {
+    const blob = await bajar(it);
+    if (!V || V.sello !== sello) return;
+    if (it.tipo === 'imagen') await visorImagen(blob, sello);
+    else if (it.tipo === 'pdf') await visorPdf(blob, sello);
+    else await visorMd(blob, sello);
+  } catch (e) {
+    console.error('[M2 visor]', e);
+    if (V && V.sello === sello) $('visor').innerHTML = `<div class="vz vz-error">No se pudo abrir ${esc(it.nombre)}:<br>${esc(textoError(e))}</div>`;
+  }
+}
+function indicadorZoom(cont) {
+  const el = document.createElement('div'); el.className = 'vz-zoom'; cont.appendChild(el);
+  return pct => { el.textContent = Math.round(pct * 100) + ' %'; el.classList.add('ver'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('ver'), 900); };
+}
+function botonera(cont, botones) {
+  const b = document.createElement('div'); b.className = 'vz-ctrl';
+  b.innerHTML = botones.map((x, i) => `<button type="button" data-b="${i}" title="${x.t}">${x.l}</button>`).join('');
+  b.querySelectorAll('button').forEach(el => { el.onclick = e => { e.stopPropagation(); botones[+el.dataset.b].f(); }; el.addEventListener('pointerdown', e => e.stopPropagation()); el.addEventListener('touchstart', e => e.stopPropagation(), { passive: true }); });
+  cont.appendChild(b);
+}
+
+/* ── IMAGEN: pellizco, arrastre, doble toque = ajustar ── */
+function visorImagen(blob, sello) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const cont = document.createElement('div'); cont.className = 'vz vz-img';
+    const img = new Image(); img.alt = '';
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('La imagen no se pudo leer')); };
+    img.onload = () => {
+      if (!V || V.sello !== sello) { URL.revokeObjectURL(url); return resolve(); }
+      $('visor').innerHTML = ''; $('visor').appendChild(cont); cont.appendChild(img);
+      const W = img.naturalWidth || 800, H = img.naturalHeight || 600;
+      img.width = W; img.height = H;
+      const z = { s: 1, x: 0, y: 0, fit: 1 };
+      const mostrarPct = indicadorZoom(cont);
+      const medidas = () => ({ w: cont.clientWidth, h: cont.clientHeight });
+      const calcFit = () => { const m = medidas(); return Math.min(m.w / W, m.h / H) || 1; };
+      const limitar = () => {
+        const m = medidas(), w = W * z.s, h = H * z.s;
+        z.x = w <= m.w ? (m.w - w) / 2 : Math.min(0, Math.max(m.w - w, z.x));
+        z.y = h <= m.h ? (m.h - h) / 2 : Math.min(0, Math.max(m.h - h, z.y));
+      };
+      const pintar = () => { img.style.transform = `translate(${z.x}px,${z.y}px) scale(${z.s})`; };
+      const ajustar = () => { z.fit = calcFit(); z.s = z.fit; limitar(); pintar(); };
+      const maxS = () => Math.max(z.fit * 10, 4);
+      const zoomEn = (px, py, s, anim) => {
+        s = Math.min(maxS(), Math.max(z.fit, s));
+        const cx = (px - z.x) / z.s, cy = (py - z.y) / z.s;
+        z.x = px - cx * s; z.y = py - cy * s; z.s = s; limitar();
+        img.style.transition = anim ? 'transform .18s ease-out' : ''; pintar();
+        if (anim) setTimeout(() => { img.style.transition = ''; }, 200);
+        mostrarPct(z.s / z.fit);
+      };
+      ajustar();
+      // Gestos (pointer events: dedo y mouse)
+      const ptrs = new Map(); let pinza = null, arr = null, tap = { t: 0, x: 0, y: 0 }, movido = false;
+      const local = e => { const r = cont.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+      const onDown = e => {
+        cont.setPointerCapture && cont.setPointerCapture(e.pointerId);
+        ptrs.set(e.pointerId, local(e)); movido = false;
+        if (ptrs.size === 1) { const p = local(e); arr = { x: p.x, y: p.y, zx: z.x, zy: z.y }; cont.classList.add('arrastrando'); }
+        if (ptrs.size === 2) {
+          const [a, b] = Array.from(ptrs.values());
+          pinza = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, s: z.s, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, zx: z.x, zy: z.y }; arr = null;
+        }
+      };
+      const onMove = e => {
+        if (!ptrs.has(e.pointerId)) return;
+        ptrs.set(e.pointerId, local(e));
+        if (pinza && ptrs.size >= 2) {
+          const [a, b] = Array.from(ptrs.values());
+          const d = Math.hypot(a.x - b.x, a.y - b.y), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+          const s = Math.min(maxS(), Math.max(z.fit * 0.6, pinza.s * d / pinza.d));
+          const cx = (pinza.mx - pinza.zx) / pinza.s, cy = (pinza.my - pinza.zy) / pinza.s;
+          z.s = s; z.x = mx - cx * s; z.y = my - cy * s; pintar(); movido = true;
+        } else if (arr) {
+          const p = local(e);
+          if (Math.abs(p.x - arr.x) + Math.abs(p.y - arr.y) > 6) movido = true;
+          z.x = arr.zx + p.x - arr.x; z.y = arr.zy + p.y - arr.y; limitar(); pintar();
+        }
+      };
+      const onUp = e => {
+        const p = ptrs.get(e.pointerId); ptrs.delete(e.pointerId);
+        if (pinza && ptrs.size < 2) {
+          pinza = null;
+          if (z.s < z.fit) { z.s = z.fit; } limitar(); img.style.transition = 'transform .15s'; pintar(); setTimeout(() => img.style.transition = '', 160);
+          mostrarPct(z.s / z.fit);
+          const rest = Array.from(ptrs.values())[0];
+          arr = rest ? { x: rest.x, y: rest.y, zx: z.x, zy: z.y } : null;
+          movido = true; return;
+        }
+        if (!ptrs.size) { arr = null; cont.classList.remove('arrastrando'); }
+        if (e.type === 'pointerup' && p && !movido) {
+          const ahora = Date.now();
+          if (ahora - tap.t < 320 && Math.hypot(p.x - tap.x, p.y - tap.y) < 40) {
+            if (z.s > z.fit * 1.05) { z.s = z.fit; limitar(); img.style.transition = 'transform .18s'; pintar(); setTimeout(() => img.style.transition = '', 200); mostrarPct(1); }
+            else zoomEn(p.x, p.y, z.fit * 2.5, true);
+            tap.t = 0;
+          } else tap = { t: ahora, x: p.x, y: p.y };
+        }
+      };
+      const onWheel = e => {
+        e.preventDefault();
+        const p = local(e); zoomEn(p.x, p.y, z.s * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)), false);
+      };
+      cont.addEventListener('pointerdown', onDown);
+      cont.addEventListener('pointermove', onMove);
+      cont.addEventListener('pointerup', onUp);
+      cont.addEventListener('pointercancel', onUp);
+      cont.addEventListener('wheel', onWheel, { passive: false });
+      const onResize = () => { const enFit = Math.abs(z.s - z.fit) < 1e-3; z.fit = calcFit(); if (enFit || z.s < z.fit) z.s = z.fit; limitar(); pintar(); };
+      window.addEventListener('resize', onResize);
+      botonera(cont, [
+        { l: '−', t: 'Alejar', f: () => { const m = medidas(); zoomEn(m.w / 2, m.h / 2, z.s / 1.5, true); } },
+        { l: '⤢', t: 'Ajustar a la pantalla', f: () => { ajustar(); mostrarPct(1); } },
+        { l: '+', t: 'Acercar', f: () => { const m = medidas(); zoomEn(m.w / 2, m.h / 2, z.s * 1.5, true); } },
+      ]);
+      V.zoom = () => z.s / z.fit;    // para la prueba automática
+      V.limpiar = () => { window.removeEventListener('resize', onResize); URL.revokeObjectURL(url); };
+      resolve();
+    };
+    img.src = url;
+  });
+}
+
+/* ── PDF: pdf.js legacy, scroll nativo, pellizco con re-render ── */
+let pdfjsCarga = null;
+function cargarPdfJs() {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (!pdfjsCarga) pdfjsCarga = new Promise((res, rej) => {
+    const s = document.createElement('script'); s.src = PDFJS_URL;
+    s.onload = () => { if (!window.pdfjsLib) return rej(new Error('pdf.js no cargó')); window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER; res(window.pdfjsLib); };
+    s.onerror = () => { pdfjsCarga = null; rej(new Error('No se pudo cargar el lector de PDF (sin conexión)')); };
+    document.head.appendChild(s);
+  });
+  return pdfjsCarga;
+}
+async function visorPdf(blob, sello) {
+  const lib = await cargarPdfJs();
+  const datos = new Uint8Array(await blob.arrayBuffer());
+  const doc = await lib.getDocument({ data: datos }).promise;
+  if (!V || V.sello !== sello) { doc.destroy(); return; }
+  // Tamaños de todas las hojas (a escala 1)
+  const hojas = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    const pg = await doc.getPage(i);
+    const vp = pg.getViewport({ scale: 1 });
+    hojas.push({ n: i, pg, w: vp.width, h: vp.height, el: null, cv: null, hecho: 0, tarea: null, visible: false });
+    if (!V || V.sello !== sello) { doc.destroy(); return; }
+  }
+  const cont = document.createElement('div'); cont.className = 'vz vz-pdf';
+  const wrap = document.createElement('div'); wrap.className = 'vz-pdf-hojas';
+  cont.appendChild(wrap);
+  hojas.forEach(h => {
+    h.el = document.createElement('div'); h.el.className = 'vz-hoja'; h.el.dataset.n = h.n;
+    h.el.innerHTML = `<span class="n">${h.n}</span>`;
+    wrap.appendChild(h.el);
+  });
+  const pag = document.createElement('div'); pag.className = 'vz-pag';
+  $('visor').innerHTML = ''; $('visor').appendChild(cont); $('visor').appendChild(pag);
+  const mostrarPct = indicadorZoom($('visor'));
+  const PAD = 12, GAP = 12;
+  const z = { k: 1 };                      // 1 = ancho de la pantalla
+  const maxW = Math.max(...hojas.map(h => h.w));
+  const anchoBase = () => Math.max(200, cont.clientWidth - PAD * 2);
+  const minK = () => { const h0 = hojas[0]; const alto = (anchoBase() * h0.h / h0.w); return Math.min(1, (cont.clientHeight - PAD * 2) / alto); };
+  const anchoHoja = h => anchoBase() * z.k * (h.w / maxW);
+  const maquetar = () => hojas.forEach(h => { const w = anchoHoja(h); h.el.style.width = w + 'px'; h.el.style.height = (w * h.h / h.w) + 'px'; });
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const MAX_PX = 6e6;   // tope de pixeles por hoja (memoria de la tablet)
+  async function render(h) {
+    const w = anchoHoja(h);
+    if (h.hecho && Math.abs(h.hecho - w) < 1) return;
+    if (h.tarea) { try { h.tarea.cancel(); } catch (e) { /* nada */ } h.tarea = null; }
+    let esc1 = (w / h.w) * dpr;
+    const px = h.w * esc1 * h.h * esc1;
+    if (px > MAX_PX) esc1 *= Math.sqrt(MAX_PX / px);
+    const vp = h.pg.getViewport({ scale: esc1 });
+    const cv = document.createElement('canvas');
+    cv.width = Math.floor(vp.width); cv.height = Math.floor(vp.height);
+    const tarea = h.pg.render({ canvasContext: cv.getContext('2d'), viewport: vp });
+    h.tarea = tarea;
+    try {
+      await tarea.promise;
+      if (h.tarea !== tarea || !V || V.sello !== sello) return;
+      if (h.cv) h.cv.remove();
+      h.el.appendChild(cv); h.cv = cv; h.hecho = w; h.tarea = null;
+    } catch (e) { if (!/cancel/i.test(String(e && (e.name || e.message)))) log('render', e); }
+  }
+  function liberar(h) {
+    if (h.tarea) { try { h.tarea.cancel(); } catch (e) { /* nada */ } h.tarea = null; }
+    if (h.cv) { h.cv.width = 0; h.cv.height = 0; h.cv.remove(); h.cv = null; }
+    h.hecho = 0;
+  }
+  const obs = new IntersectionObserver(entries => {
+    entries.forEach(en => {
+      const h = hojas[+en.target.dataset.n - 1];
+      h.visible = en.isIntersecting;
+      if (h.visible) render(h); else liberar(h);
+    });
+  }, { root: cont, rootMargin: '120% 60% 120% 60%' });
+  maquetar();
+  hojas.forEach(h => obs.observe(h.el));
+  const reRender = () => hojas.forEach(h => { if (h.visible) render(h); });
+  // Zoom manteniendo fijo el punto (fx, fy) de la pantalla
+  function zoomA(k, fx, fy) {
+    k = Math.min(5, Math.max(minK(), k));
+    if (fx == null) { fx = cont.clientWidth / 2; fy = cont.clientHeight / 2; }
+    const r = k / z.k;
+    const cx = cont.scrollLeft + fx, cy = cont.scrollTop + fy;
+    z.k = k; maquetar();
+    cont.scrollLeft = Math.max(0, (cx - PAD) * r + PAD - fx);
+    cont.scrollTop = Math.max(0, (cy - PAD) * r + PAD - fy);
+    clearTimeout(zoomA._t); zoomA._t = setTimeout(reRender, 120);
+    mostrarPct(z.k);
+  }
+  // Página actual
+  const pintarPag = () => {
+    const ref = cont.scrollTop + cont.clientHeight / 3;
+    let n = 1; for (const h of hojas) { if (h.el.offsetTop <= ref) n = h.n; else break; }
+    pag.textContent = `${n} / ${hojas.length}`;
+  };
+  cont.addEventListener('scroll', pintarPag, { passive: true });
+  pintarPag();
+  // Pellizco (touch): vista previa con transform y re-render al soltar
+  let pz = null, ultTap = { t: 0, x: 0, y: 0 }, ultToque = 0, toqueMovido = false, toqueIni = null;
+  const local = (cx, cy) => { const r = cont.getBoundingClientRect(); return { x: cx - r.left, y: cy - r.top }; };
+  const onTS = e => {
+    ultToque = Date.now();
+    if (e.touches.length === 2) {
+      const [a, b] = [e.touches[0], e.touches[1]];
+      const m = local((a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2);
+      pz = { d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1, f: 1, mx: m.x, my: m.y };
+      wrap.style.transformOrigin = `${cont.scrollLeft + m.x}px ${cont.scrollTop + m.y}px`;
+      toqueMovido = true;
+    } else if (e.touches.length === 1) {
+      toqueMovido = false; toqueIni = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    }
+  };
+  const onTM = e => {
+    if (pz && e.touches.length === 2) {
+      if (e.cancelable) e.preventDefault();
+      const [a, b] = [e.touches[0], e.touches[1]];
+      const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      const kNuevo = Math.min(5, Math.max(minK() * 0.8, z.k * d / pz.d));
+      pz.f = kNuevo / z.k;
+      wrap.style.transform = `scale(${pz.f})`;
+    } else if (toqueIni && e.touches.length === 1) {
+      if (Math.abs(e.touches[0].clientX - toqueIni.x) + Math.abs(e.touches[0].clientY - toqueIni.y) > 10) toqueMovido = true;
+    }
+  };
+  const onTE = e => {
+    ultToque = Date.now();
+    if (pz && e.touches.length < 2) {
+      const f = pz.f, mx = pz.mx, my = pz.my; pz = null;
+      wrap.style.transform = ''; wrap.style.transformOrigin = '';
+      if (Math.abs(f - 1) > 0.01) zoomA(z.k * f, mx, my);
+      return;
+    }
+    if (e.touches.length === 0 && !toqueMovido && e.changedTouches.length === 1) {
+      const t = e.changedTouches[0], p = local(t.clientX, t.clientY), ahora = Date.now();
+      if (ahora - ultTap.t < 320 && Math.hypot(p.x - ultTap.x, p.y - ultTap.y) < 40) {
+        if (z.k > 1.05) zoomA(1, p.x, p.y); else zoomA(2.5, p.x, p.y);
+        ultTap.t = 0;
+      } else ultTap = { t: ahora, x: p.x, y: p.y };
+    }
+  };
+  cont.addEventListener('touchstart', onTS, { passive: true });
+  cont.addEventListener('touchmove', onTM, { passive: false });
+  cont.addEventListener('touchend', onTE, { passive: true });
+  cont.addEventListener('touchcancel', onTE, { passive: true });
+  // Mouse: doble clic y Ctrl+rueda (y el pellizco del touchpad)
+  cont.addEventListener('dblclick', e => { if (Date.now() - ultToque < 800) return; const p = local(e.clientX, e.clientY); if (z.k > 1.05) zoomA(1, p.x, p.y); else zoomA(2.5, p.x, p.y); });
+  cont.addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefault(); const p = local(e.clientX, e.clientY); zoomA(z.k * Math.exp(-e.deltaY * 0.01), p.x, p.y); }, { passive: false });
+  const onResize = () => { maquetar(); clearTimeout(onResize._t); onResize._t = setTimeout(reRender, 150); };
+  window.addEventListener('resize', onResize);
+  botonera($('visor'), [
+    { l: '−', t: 'Alejar', f: () => zoomA(z.k / 1.4) },
+    { l: '⤢', t: 'Ancho de la pantalla', f: () => zoomA(1) },
+    { l: '+', t: 'Acercar', f: () => zoomA(z.k * 1.4) },
+  ]);
+  V.zoom = () => z.k; V.paginas = hojas.length;
+  V.limpiar = () => { obs.disconnect(); window.removeEventListener('resize', onResize); hojas.forEach(liberar); doc.destroy(); };
+}
+
+/* ── MD: marked.js (estilo de MDtoDOCX v1.5) ── */
+async function visorMd(blob, sello) {
+  const texto = await blob.text();
+  if (!V || V.sello !== sello) return;
+  const cont = document.createElement('div'); cont.className = 'vz vz-md';
+  const art = document.createElement('article'); art.className = 'md-page md-body';
+  art.innerHTML = marked.parse(texto, { gfm: true });
+  art.querySelectorAll('a[href]').forEach(a => { if (!a.getAttribute('href').startsWith('#')) { a.target = '_blank'; a.rel = 'noopener'; } });
+  art.querySelectorAll('table').forEach(t => { const w = document.createElement('div'); w.className = 'tbl-wrap'; t.parentNode.insertBefore(w, t); w.appendChild(t); });
+  art.querySelectorAll('li > input[type=checkbox]').forEach(c => c.parentElement.classList.add('tarea'));
+  cont.appendChild(art);
+  $('visor').innerHTML = ''; $('visor').appendChild(cont);
+  const mostrarPct = indicadorZoom($('visor'));
+  const BASE = 17;
+  const tam = px => { px = Math.min(40, Math.max(11, px)); document.documentElement.style.setProperty('--md-fs', px + 'px'); lsSet(LS.mdFs, String(px)); mostrarPct(px / BASE); };
+  const actual = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--md-fs')) || BASE;
+  botonera($('visor'), [
+    { l: 'A−', t: 'Letra más chica', f: () => tam(actual() - 2) },
+    { l: 'A+', t: 'Letra más grande', f: () => tam(actual() + 2) },
+  ]);
+  V.limpiar = () => { };
+}
+
+/* ════════════════════════════════════════════════════════
+   PANTALLA COMPLETA · WAKE LOCK · INSTALAR · MENÚ
+════════════════════════════════════════════════════════ */
+function enFull() { return !!(document.fullscreenElement || document.webkitFullscreenElement); }
+function alternarFull() {
+  const de = document.documentElement;
+  if (enFull()) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  else {
+    const p = (de.requestFullscreen || de.webkitRequestFullscreen).call(de);
+    if (p && p.catch) p.catch(e => toast('No se pudo pasar a pantalla completa: ' + e.message, true));
+  }
+}
+function alCambiarFull() {
+  const fs = enFull();
+  document.body.classList.toggle('fs', fs);
+  document.body.classList.remove('hdr-ver-fs');
+  $('hb-full').classList.toggle('on', fs);
+  $('hb-full').textContent = fs ? '🗗' : '⛶';
+  $('hb-full').title = fs ? 'Salir de pantalla completa' : 'Pantalla completa';
+  setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
+  if (fs && st.rol === 'monitor') pedirWakeLock();
+}
+document.addEventListener('fullscreenchange', alCambiarFull);
+document.addEventListener('webkitfullscreenchange', alCambiarFull);
+function verHeaderUnRato() {
+  document.body.classList.add('hdr-ver-fs');
+  clearTimeout(verHeaderUnRato._t); verHeaderUnRato._t = setTimeout(() => document.body.classList.remove('hdr-ver-fs'), 5000);
+}
+async function pedirWakeLock() {
+  if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
+  try {
+    if (st.wake && !st.wake.released) return;
+    st.wake = await navigator.wakeLock.request('screen');
+    log('wake lock activo');
+  } catch (e) { log('wake lock', e.message); }
+}
+function soltarWakeLock() { try { if (st.wake) st.wake.release(); } catch (e) { /* nada */ } st.wake = null; }
+
+let pedidoInstalar = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); pedidoInstalar = e; $('hb-instalar').hidden = false; });
+window.addEventListener('appinstalled', () => { $('hb-instalar').hidden = true; toast('✓ M2 instalada'); });
+async function instalar() {
+  if (!pedidoInstalar) return;
+  pedidoInstalar.prompt();
+  const r = await pedidoInstalar.userChoice; pedidoInstalar = null; $('hb-instalar').hidden = true;
+  if (r.outcome === 'accepted') toast('✓ M2 instalada');
+}
+async function menuSesion() {
+  const esMon = st.rol === 'monitor';
+  const nombre = esMon ? (lsGet(LS.nombre) || 'Tablet') : st.email;
+  const r = await abrirModal({
+    titulo: esMon ? '🖥 Este monitor' : 'Sesión',
+    html: `<div>${esMon ? `Pantalla: <b>${esc(nombre)}</b>` : `Entraste como <b>${esc(nombre)}</b>`}</div>
+      <div class="nota">M2 ${VERSION_UI} · ${esMon ? 'Para instalarla: menú de Chrome → <b>Agregar a pantalla principal</b>.' : 'Ctrl+V pega una captura; arrastrar y soltar funciona en toda la ventana.'}</div>`,
+    botones: [
+      { texto: 'Recargar', clase: 'sec', valor: 'recargar' },
+      { texto: esMon ? 'Dejar de ser monitor' : 'Cerrar sesión', clase: 'peligro', valor: 'salir' },
+      { texto: 'Cerrar', clase: 'sec', valor: false },
+    ],
+  });
+  if (r === 'recargar') location.reload();
+  if (r === 'salir') {
+    if (esMon) { try { await sb.rpc('mdos_monitor_salir'); } catch (e) { log('salir', e); } }
+    salirDeApp();
+    await cambiarRol();
+  }
+}
+
+/* ════════════════════════════════════════════════════════
+   ARRANQUE
+════════════════════════════════════════════════════════ */
+window.addEventListener('load', async () => {
+  $('pie-ver').textContent = 'M2 ' + VERSION_UI;
+  const fs = parseFloat(lsGet(LS.mdFs)); if (fs) document.documentElement.style.setProperty('--md-fs', fs + 'px');
+  $('rol-emisor').onclick = () => elegirRol('emisor');
+  $('rol-monitor').onclick = () => elegirRol('monitor');
+  document.querySelectorAll('[data-cambiar-rol]').forEach(b => b.onclick = cambiarRol);
+  $('login-enviar').onclick = enviarCodigo;
+  $('login-email').onkeydown = e => { if (e.key === 'Enter') enviarCodigo(); };
+  $('login-validar').onclick = validarCodigo;
+  $('login-codigo').onkeydown = e => { if (e.key === 'Enter') validarCodigo(); };
+  $('login-volver').onclick = () => pasoLogin('email');
+  $('denegado-salir').onclick = cambiarRol;
+  $('emp-btn').onclick = emparejar;
+  $('emp-codigo').onkeydown = e => { if (e.key === 'Enter') emparejar(); };
+  $('emp-codigo').oninput = () => { if ($('emp-codigo').value.replace(/\D/g, '').length === 6) emparejar(); };
+  $('soltar').onclick = () => $('archivo').click();
+  $('archivo').onchange = () => { tirarArchivos($('archivo').files); $('archivo').value = ''; };
+  $('buscar').oninput = renderListas;
+  $('act-quitar').onclick = quitarDePantalla;
+  $('hb-monitores').onclick = abrirMonitores;
+  $('hb-historico').onclick = () => $('cajon').classList.contains('abierto') ? cerrarCajon() : abrirCajon();
+  $('cajon-cerrar').onclick = cerrarCajon;
+  $('hb-full').onclick = alternarFull;
+  $('manija').onclick = verHeaderUnRato;
+  $('hb-instalar').onclick = instalar;
+  $('hb-menu').onclick = menuSesion;
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    try { navigator.serviceWorker.register('sw.js').catch(e => log('sw', e.message)); } catch (e) { log('sw', e); }
+  }
+  try { await arrancar(); }
+  catch (e) { console.error('[M2 arrancar]', e); mostrarRol(); toast('No se pudo arrancar: ' + textoError(e), true); }
+});
+</script>
+</body>
+</html>
