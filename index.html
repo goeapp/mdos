@@ -8,7 +8,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>M2 · Monitor 2</title>
 <!--
-  index_mdos_v1.0.0.html — M2 · Monitor 2 v1.0.0 (16-oct-2026)
+  index_mdos_v1.0.1.html — M2 · Monitor 2 v1.0.1 (18-oct-2026)
   Repo: goeapp/mdos → https://goeapp.github.io/mdos/ (subir como index.html, junto con
         manifest.webmanifest, sw.js, icon-192.png, icon-512.png, icon-maskable-512.png, apple-touch-icon.png)
 
@@ -24,10 +24,13 @@
   · Header mínimo + pantalla completa. Instalable (manifest + service worker). Pantalla siempre encendida
     en el monitor (Wake Lock, si el navegador lo soporta).
 
-  Requiere en Supabase: mdos_esquema_v1_0_0.sql + "Allow anonymous sign-ins" ON
+  Requiere en Supabase: mdos_esquema_v1_0_2.sql + "Allow anonymous sign-ins" ON
                         + https://goeapp.github.io/mdos/ en Authentication → URL Configuration → Redirect URLs.
 
   Changelog
+  v1.0.1 — retoques: header sin el ícono (solo el texto "M2"); íconos SVG en vez de símbolos Unicode
+           (⤢ ⛶ 🗗 ⋮ ⋯ ↩ ☰ no existen o salen como emoji en Android 6); emisor: botón para
+           colapsar/expandir la columna lateral (recuerda el estado).
   v1.0.0 — primera versión.
 -->
 <link rel="manifest" href="manifest.webmanifest">
@@ -93,8 +96,7 @@ button { cursor: pointer; }
 /* ── APP / HEADER MÍNIMO ───────────────────────────────── */
 #app { display: none; flex-direction: column; height: 100%; }
 #app.activa { display: flex; }
-#hdr { height: var(--header-h); background: var(--accent2); display: flex; align-items: center; gap: 8px; padding: 0 8px 0 10px; flex-shrink: 0; color: #fff; position: relative; z-index: 30; }
-#hdr img { width: 24px; height: 24px; }
+#hdr { height: var(--header-h); background: var(--accent2); display: flex; align-items: center; gap: 8px; padding: 0 8px 0 12px; flex-shrink: 0; color: #fff; position: relative; z-index: 30; }
 .hdr-tit { font-family: 'Bebas Neue', sans-serif; font-size: 1.25rem; color: var(--accent); letter-spacing: 2px; line-height: 1; }
 .hdr-ver { font-size: .64rem; color: rgba(255,255,255,.35); }
 .hdr-nombre { font-size: .8rem; color: rgba(255,255,255,.85); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; padding-left: 6px; }
@@ -112,9 +114,17 @@ button { cursor: pointer; }
 /* Pantalla completa: el header se esconde; la manija lo muestra unos segundos */
 body.fs #hdr { position: absolute; top: 0; left: 0; right: 0; transform: translateY(-100%); transition: transform .2s; }
 body.fs.hdr-ver-fs #hdr { transform: none; box-shadow: var(--shadow-md); }
-#manija { display: none; position: fixed; top: 6px; right: 8px; z-index: 31; width: 34px; height: 34px; border-radius: 50%; border: none; background: rgba(15,23,42,.45); color: rgba(255,255,255,.85); font-size: 1rem; }
+#manija { display: none; position: fixed; top: 6px; right: 8px; z-index: 31; width: 34px; height: 34px; border-radius: 50%; border: none; padding: 0; background: rgba(15,23,42,.45); color: rgba(255,255,255,.85); font-size: 1rem; }
 body.fs #manija { display: block; }
 body.fs.hdr-ver-fs #manija { display: none; }
+
+/* Íconos SVG (no dependen de las fuentes del dispositivo) */
+.ico { width: 16px; height: 16px; display: block; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.vz-ctrl .ico { width: 20px; height: 20px; margin: auto; }
+#manija .ico { margin: auto; }
+.hb .ico + span { margin-left: 1px; }
+/* Emisor: columna colapsada */
+body.col-cerrada #col { display: none; }
 
 /* ── CUERPO ────────────────────────────────────────────── */
 #cuerpo { flex: 1; display: flex; min-height: 0; position: relative; }
@@ -185,7 +195,7 @@ body.fs.hdr-ver-fs #manija { display: none; }
 .vz-error { display: flex; align-items: center; justify-content: center; color: #fecaca; padding: 20px; text-align: center; }
 /* Controles flotantes del visor */
 .vz-ctrl { position: absolute; right: 12px; bottom: 12px; display: flex; gap: 6px; z-index: 5; }
-.vz-ctrl button { width: 42px; height: 42px; border-radius: 10px; border: none; background: rgba(15,23,42,.72); color: #fff; font-size: 1.05rem; font-weight: 600; box-shadow: 0 2px 6px rgba(0,0,0,.25); }
+.vz-ctrl button { display: flex; align-items: center; justify-content: center; padding: 0; width: 42px; height: 42px; border-radius: 10px; border: none; background: rgba(15,23,42,.72); color: #fff; font-size: 1.05rem; font-weight: 600; box-shadow: 0 2px 6px rgba(0,0,0,.25); }
 .vz-ctrl button:active { background: var(--accent); }
 .vz-pag { position: absolute; left: 12px; bottom: 12px; z-index: 5; background: rgba(15,23,42,.72); color: #fff; font-size: .8rem; padding: 6px 10px; border-radius: 8px; pointer-events: none; }
 .vz-zoom { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); z-index: 6; background: rgba(15,23,42,.8); color: #fff; font-size: .82rem; font-weight: 600; padding: 4px 12px; border-radius: 999px; pointer-events: none; opacity: 0; transition: opacity .2s; }
@@ -330,18 +340,18 @@ table.tabla { width: 100%; border-collapse: collapse; font-size: .82rem; margin-
 <!-- 5. APP -->
 <div id="app">
   <header id="hdr">
-    <img src="icon-192.png" alt="">
+    <button class="hb" id="hb-col" type="button" title="Ocultar el histórico" hidden data-ico="panel"></button>
     <span class="hdr-tit">M2</span>
     <span class="hdr-ver" id="hdr-ver"></span>
     <span class="hdr-nombre" id="hdr-nombre"></span>
     <span class="hdr-estado" id="hdr-estado" title="Conexión"><span class="punto" id="hdr-punto"></span><span id="hdr-estado-txt"></span></span>
     <button class="hb inst" id="hb-instalar" type="button" hidden>⬇ Instalar</button>
     <button class="hb" id="hb-monitores" type="button" title="Tablets emparejadas" hidden>🖥 Monitores</button>
-    <button class="hb" id="hb-historico" type="button" title="Histórico" hidden>☰</button>
-    <button class="hb" id="hb-full" type="button" title="Pantalla completa">⛶</button>
-    <button class="hb" id="hb-menu" type="button" title="Sesión">⋮</button>
+    <button class="hb" id="hb-historico" type="button" title="Histórico" hidden data-ico="lista"></button>
+    <button class="hb" id="hb-full" type="button" title="Pantalla completa" data-ico="full"></button>
+    <button class="hb" id="hb-menu" type="button" title="Sesión" data-ico="menu"></button>
   </header>
-  <button id="manija" type="button" title="Mostrar barra">⋯</button>
+  <button id="manija" type="button" title="Mostrar barra" data-ico="mas"></button>
   <div id="cuerpo">
     <aside id="col" hidden>
       <div id="soltar" title="También podés soltar el archivo en cualquier parte de la ventana">
@@ -378,7 +388,7 @@ table.tabla { width: 100%; border-collapse: collapse; font-size: .82rem; margin-
 /* ════════════════════════════════════════════════════════
    CONFIGURACIÓN
 ════════════════════════════════════════════════════════ */
-const VERSION_UI     = 'v1.0.0';
+const VERSION_UI     = 'v1.0.1';
 const SUPABASE_URL   = 'https://uhuftsxrzwhmvzygcuvp.supabase.co';
 const SUPABASE_KEY   = 'sb_publishable_TCibRAnzgaDIbn_MIirw6w_FltKG8X3';
 const REDIRECT_MAIL  = 'https://goeapp.github.io/mdos/';   // la plantilla del mail lo usa para poner "M2"
@@ -387,7 +397,7 @@ const BUCKET         = 'mdos';
 const MAX_MB         = 50;
 const PDFJS_URL      = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.min.js';
 const PDFJS_WORKER   = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.worker.min.js';
-const LS = { rol: 'mdos-rol', mdFs: 'mdos-md-fs', nombre: 'mdos-monitor-nombre' };
+const LS = { rol: 'mdos-rol', mdFs: 'mdos-md-fs', nombre: 'mdos-monitor-nombre', col: 'mdos-col-cerrada' };
 const PING_MS = 60000, POLL_MS = 20000, MONITORES_MS = 30000, EN_LINEA_MS = 150000;
 
 // Sesión propia de M2: todas las PWA viven en goeapp.github.io (mismo localStorage)
@@ -455,6 +465,21 @@ function textoError(err) {
 }
 async function q(promesa) { const { data, error } = await promesa; if (error) throw error; return data; }
 const TIPO_TXT = { pdf: 'PDF', imagen: 'IMG', md: 'MD' };
+// Íconos SVG (trazo 24×24). En Android 6 varios símbolos Unicode no existen o salen como emoji.
+const ICO_PATHS = {
+  ajustar: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
+  full:    '<path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/>',
+  salir:   '<path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5"/>',
+  menu:    '<circle cx="12" cy="5" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="19" r="1.4" fill="currentColor"/>',
+  mas:     '<circle cx="5" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="19" cy="12" r="1.4" fill="currentColor"/>',
+  lista:   '<path d="M4 6h16M4 12h16M4 18h16"/>',
+  panel:   '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
+  volver:  '<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
+  menos:   '<path d="M5 12h14"/>',
+  mas1:    '<path d="M12 5v14M5 12h14"/>',
+};
+const ico = n => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${ICO_PATHS[n]}</svg>`;
+function pintarIconos(raiz) { (raiz || document).querySelectorAll('[data-ico]').forEach(el => { el.innerHTML = ico(el.dataset.ico); }); }
 const esTactil = () => ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 function itemPorId(id) { return st.items.find(i => i.id === id) || null; }
 
@@ -630,6 +655,8 @@ async function iniciarApp(rol) {
   $('barra-act').hidden = rol !== 'emisor';
   $('hb-monitores').hidden = rol !== 'emisor';
   $('hb-historico').hidden = rol !== 'monitor';
+  $('hb-col').hidden = rol !== 'emisor';
+  aplicarColumna(rol === 'emisor' && lsGet(LS.col) === '1');
   $('hdr-nombre').textContent = rol === 'emisor' ? st.email : '';
   if (!document.fullscreenEnabled && !document.webkitFullscreenEnabled) $('hb-full').hidden = true;
   renderVacio();
@@ -748,7 +775,7 @@ async function traerItem(id) {
 function encabezado() {
   if (st.rol !== 'monitor') return;
   const it = st.mostrando;
-  $('hdr-nombre').innerHTML = it ? esc(it.nombre) + (st.local ? ' <span class="chip warn">del histórico</span> <button class="hb" type="button" id="hb-volver">↩ Lo actual</button>' : '') : '';
+  $('hdr-nombre').innerHTML = it ? esc(it.nombre) + (st.local ? ' <span class="chip warn">del histórico</span> <button class="hb" type="button" id="hb-volver">' + ico('volver') + '<span>Lo actual</span></button>' : '') : '';
   const b = $('hb-volver'); if (b) b.onclick = volverALoActual;
 }
 function volverALoActual() { st.local = false; st.mostrando = null; aplicarEstado(); renderListas(); }
@@ -789,6 +816,18 @@ function renderListas() {
       renderListas();
     });
   }
+}
+// Emisor: colapsar / expandir la columna del histórico (recuerda el estado)
+function aplicarColumna(cerrada) {
+  document.body.classList.toggle('col-cerrada', cerrada);
+  $('hb-col').classList.toggle('on', cerrada);
+  $('hb-col').title = cerrada ? 'Mostrar el histórico' : 'Ocultar el histórico';
+  setTimeout(() => window.dispatchEvent(new Event('resize')), 30);   // el visor se reacomoda al nuevo ancho
+}
+function alternarColumna() {
+  const cerrada = !document.body.classList.contains('col-cerrada');
+  lsSet(LS.col, cerrada ? '1' : null);
+  aplicarColumna(cerrada);
 }
 function abrirCajon() { $('cajon').classList.add('abierto'); $('hb-historico').classList.add('on'); renderListas(); }
 function cerrarCajon() { $('cajon').classList.remove('abierto'); $('hb-historico').classList.remove('on'); }
@@ -1154,9 +1193,9 @@ function visorImagen(blob, sello) {
       const onResize = () => { const enFit = Math.abs(z.s - z.fit) < 1e-3; z.fit = calcFit(); if (enFit || z.s < z.fit) z.s = z.fit; limitar(); pintar(); };
       window.addEventListener('resize', onResize);
       botonera(cont, [
-        { l: '−', t: 'Alejar', f: () => { const m = medidas(); zoomEn(m.w / 2, m.h / 2, z.s / 1.5, true); } },
-        { l: '⤢', t: 'Ajustar a la pantalla', f: () => { ajustar(); mostrarPct(1); } },
-        { l: '+', t: 'Acercar', f: () => { const m = medidas(); zoomEn(m.w / 2, m.h / 2, z.s * 1.5, true); } },
+        { l: ico('menos'), t: 'Alejar', f: () => { const m = medidas(); zoomEn(m.w / 2, m.h / 2, z.s / 1.5, true); } },
+        { l: ico('ajustar'), t: 'Ajustar a la pantalla', f: () => { ajustar(); mostrarPct(1); } },
+        { l: ico('mas1'), t: 'Acercar', f: () => { const m = medidas(); zoomEn(m.w / 2, m.h / 2, z.s * 1.5, true); } },
       ]);
       V.zoom = () => z.s / z.fit;    // para la prueba automática
       V.limpiar = () => { window.removeEventListener('resize', onResize); URL.revokeObjectURL(url); };
@@ -1318,9 +1357,9 @@ async function visorPdf(blob, sello) {
   const onResize = () => { maquetar(); clearTimeout(onResize._t); onResize._t = setTimeout(reRender, 150); };
   window.addEventListener('resize', onResize);
   botonera($('visor'), [
-    { l: '−', t: 'Alejar', f: () => zoomA(z.k / 1.4) },
-    { l: '⤢', t: 'Ancho de la pantalla', f: () => zoomA(1) },
-    { l: '+', t: 'Acercar', f: () => zoomA(z.k * 1.4) },
+    { l: ico('menos'), t: 'Alejar', f: () => zoomA(z.k / 1.4) },
+    { l: ico('ajustar'), t: 'Ancho de la pantalla', f: () => zoomA(1) },
+    { l: ico('mas1'), t: 'Acercar', f: () => zoomA(z.k * 1.4) },
   ]);
   V.zoom = () => z.k; V.paginas = hojas.length;
   V.limpiar = () => { obs.disconnect(); window.removeEventListener('resize', onResize); hojas.forEach(liberar); doc.destroy(); };
@@ -1366,7 +1405,7 @@ function alCambiarFull() {
   document.body.classList.toggle('fs', fs);
   document.body.classList.remove('hdr-ver-fs');
   $('hb-full').classList.toggle('on', fs);
-  $('hb-full').textContent = fs ? '🗗' : '⛶';
+  $('hb-full').innerHTML = ico(fs ? 'salir' : 'full');
   $('hb-full').title = fs ? 'Salir de pantalla completa' : 'Pantalla completa';
   setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
   if (fs && st.rol === 'monitor') pedirWakeLock();
@@ -1422,6 +1461,7 @@ async function menuSesion() {
 ════════════════════════════════════════════════════════ */
 window.addEventListener('load', async () => {
   $('pie-ver').textContent = 'M2 ' + VERSION_UI;
+  pintarIconos();
   const fs = parseFloat(lsGet(LS.mdFs)); if (fs) document.documentElement.style.setProperty('--md-fs', fs + 'px');
   $('rol-emisor').onclick = () => elegirRol('emisor');
   $('rol-monitor').onclick = () => elegirRol('monitor');
@@ -1442,6 +1482,7 @@ window.addEventListener('load', async () => {
   $('hb-monitores').onclick = abrirMonitores;
   $('hb-historico').onclick = () => $('cajon').classList.contains('abierto') ? cerrarCajon() : abrirCajon();
   $('cajon-cerrar').onclick = cerrarCajon;
+  $('hb-col').onclick = alternarColumna;
   $('hb-full').onclick = alternarFull;
   $('manija').onclick = verHeaderUnRato;
   $('hb-instalar').onclick = instalar;
